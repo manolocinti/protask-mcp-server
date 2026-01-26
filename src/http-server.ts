@@ -2,13 +2,26 @@
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import { ProTaskClient } from './api-client.js';
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+}));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3456;
+
+// Store active SSE sessions
+interface SSESession {
+  res: Response;
+  token: string;
+  client: ProTaskClient;
+}
+const sessions = new Map<string, SSESession>();
 
 // Define all tools
 const tools = [
@@ -172,18 +185,176 @@ app.post('/mcp', async (req: Request, res: Response) => {
   }
 });
 
-// SSE endpoint
+// SSE endpoint - MCP protocol
 app.get('/mcp/sse', (req: Request, res: Response) => {
   const token = extractToken(req);
-  if (!token) { res.status(401).json({ error: 'Authorization required' }); return; }
+  if (!token) {
+    res.status(401).json({ error: 'Authorization required' });
+    return;
+  }
+
+  // Generate unique session ID
+  const sessionId = crypto.randomUUID();
+
+  // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.write(`data: ${JSON.stringify({ type: 'connected', server: 'protask-mcp-server' })}\n\n`);
-  const keepAlive = setInterval(() => { res.write(`:keepalive\n\n`); }, 30000);
-  req.on('close', () => { clearInterval(keepAlive); });
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Create client and store session
+  const client = new ProTaskClient(token, 'https://protask.ilmarketing.net/api/v1');
+  sessions.set(sessionId, { res, token, client });
+
+  // Send endpoint event - this tells the client where to POST messages
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const endpointUrl = `${baseUrl}/mcp/message?sessionId=${sessionId}`;
+  res.write(`event: endpoint\ndata: ${endpointUrl}\n\n`);
+
+  console.log(`[SSE] Session ${sessionId} connected`);
+
+  // Keep-alive ping
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(`:ping\n\n`);
+    }
+  }, 15000);
+
+  // Cleanup on close
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    sessions.delete(sessionId);
+    console.log(`[SSE] Session ${sessionId} disconnected`);
+  });
+});
+
+// Message endpoint - receives JSON-RPC requests from mcp-remote
+app.post('/mcp/message', async (req: Request, res: Response) => {
+  const sessionId = req.query.sessionId as string;
+
+  if (!sessionId || !sessions.has(sessionId)) {
+    res.status(400).json({ error: 'Invalid or expired session' });
+    return;
+  }
+
+  const session = sessions.get(sessionId)!;
+  const { method, params, id } = req.body;
+
+  console.log(`[MSG] Session ${sessionId} - Method: ${method}, ID: ${id}`);
+
+  try {
+    let result: unknown;
+
+    switch (method) {
+      case 'initialize':
+        result = {
+          protocolVersion: '2024-11-05',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }
+        };
+        break;
+
+      case 'notifications/initialized':
+        // Client notification, no response needed
+        res.status(202).send('accepted');
+        return;
+
+      case 'tools/list':
+        result = { tools };
+        break;
+
+      case 'tools/call':
+        const { name, arguments: args } = params;
+        const toolResult = await executeTool(session.client, name, args || {});
+        result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+        break;
+
+      case 'ping':
+        result = {};
+        break;
+
+      default:
+        res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
+        return;
+    }
+
+    const response = { jsonrpc: '2.0', result, id };
+
+    // Send response back via HTTP (mcp-remote expects this)
+    res.json(response);
+
+  } catch (error) {
+    console.error(`[ERR] Session ${sessionId}:`, error);
+    res.json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' },
+      id
+    });
+  }
+});
+
+// Also support POST to /mcp/sse for Streamable HTTP transport
+app.post('/mcp/sse', async (req: Request, res: Response) => {
+  const token = extractToken(req);
+  if (!token) {
+    res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Authorization required' }, id: req.body?.id });
+    return;
+  }
+
+  const client = new ProTaskClient(token, 'https://protask.ilmarketing.net/api/v1');
+  const { method, params, id } = req.body;
+
+  console.log(`[HTTP] Direct POST - Method: ${method}, ID: ${id}`);
+
+  try {
+    let result: unknown;
+
+    switch (method) {
+      case 'initialize':
+        result = {
+          protocolVersion: '2024-11-05',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }
+        };
+        break;
+
+      case 'notifications/initialized':
+        res.status(202).send('accepted');
+        return;
+
+      case 'tools/list':
+        result = { tools };
+        break;
+
+      case 'tools/call':
+        const { name, arguments: args } = params;
+        const toolResult = await executeTool(client, name, args || {});
+        result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+        break;
+
+      case 'ping':
+        result = {};
+        break;
+
+      default:
+        res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
+        return;
+    }
+
+    res.json({ jsonrpc: '2.0', result, id });
+  } catch (error) {
+    console.error(`[ERR] Direct POST:`, error);
+    res.json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' },
+      id
+    });
+  }
 });
 
 app.listen(PORT, () => {
   console.log(`ProTask MCP HTTP Server running on port ${PORT}`);
+  console.log(`SSE endpoint: /mcp/sse`);
+  console.log(`Message endpoint: /mcp/message`);
 });
