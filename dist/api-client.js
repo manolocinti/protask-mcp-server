@@ -21,8 +21,36 @@ export class ProTaskClient {
             const response = await fetch(url, {
                 ...options,
                 headers,
+                redirect: 'manual',
             });
-            const data = await response.json();
+            // Handle redirects explicitly to preserve auth headers
+            if (response.status >= 300 && response.status < 400) {
+                const location = response.headers.get('location');
+                if (location) {
+                    const redirectResponse = await fetch(location, {
+                        ...options,
+                        headers,
+                    });
+                    const data = await redirectResponse.json();
+                    if (!redirectResponse.ok) {
+                        return {
+                            error: data.message || data.error || 'Request failed',
+                            errors: data.errors,
+                        };
+                    }
+                    return data;
+                }
+            }
+            const text = await response.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            }
+            catch {
+                return {
+                    error: `API returned non-JSON response (HTTP ${response.status}): ${text.substring(0, 200)}`,
+                };
+            }
             if (!response.ok) {
                 return {
                     error: data.message || data.error || 'Request failed',

@@ -134,6 +134,34 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', server: 'protask-mcp-server', version: '1.0.0' });
 });
 
+// Debug endpoint - test API call from Railway
+app.get('/debug/api-test', async (req: Request, res: Response) => {
+  const token = extractToken(req);
+  if (!token) { res.status(401).json({ error: 'Authorization required' }); return; }
+  const apiUrl = 'https://protask.ilmarketing.net/api/v1/auth/me';
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      redirect: 'manual',
+    });
+    const text = await response.text();
+    res.json({
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      bodyPreview: text.substring(0, 500),
+      redirected: response.redirected,
+      url: response.url,
+    });
+  } catch (error) {
+    res.json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
 // List tools
 app.get('/mcp/tools', (req: Request, res: Response) => {
   res.json({ tools });
