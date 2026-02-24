@@ -273,21 +273,24 @@ export class ProTaskClient {
   async createChecklist(taskId: number, data: { name: string }) {
     return this.request(`/tasks/${taskId}/checklists`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ title: data.name }),
     });
   }
 
   async addChecklistItem(taskId: number, checklistId: number, data: { name: string }) {
     return this.request(`/tasks/${taskId}/checklists/${checklistId}/items`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ title: data.name }),
     });
   }
 
   async updateChecklistItem(taskId: number, checklistId: number, itemId: number, data: { name?: string; checked?: boolean }) {
+    const payload: Record<string, unknown> = {};
+    if (data.name !== undefined) payload.title = data.name;
+    if (data.checked !== undefined) payload.is_done = data.checked;
     return this.request(`/tasks/${taskId}/checklists/${checklistId}/items/${itemId}`, {
       method: 'PUT',
-      body: JSON.stringify(data),
+      body: JSON.stringify(payload),
     });
   }
 
