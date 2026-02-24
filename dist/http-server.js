@@ -4,6 +4,7 @@ import cors from 'cors';
 import crypto from 'crypto';
 import { ProTaskClient } from './api-client.js';
 const app = express();
+app.set('trust proxy', true);
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
