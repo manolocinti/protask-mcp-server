@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:http": "node dist/http-server.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "tsc && node --test dist/handoff.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
