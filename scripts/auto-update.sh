@@ -41,7 +41,8 @@ deps_changed() { ! git diff --quiet "$1" "$2" -- package.json package-lock.json;
 build_and_test() {
   if deps_changed "$1" "$2"; then npm ci --no-audit --no-fund || return 1; fi
   npm test || return 1
-  git checkout -q -- dist
+  # Il server gira con la dist/ appena compilata e testata, non con quella del commit
+  if ! git diff --quiet -- dist; then log "ATTENZIONE: la dist/ del commit ${2:0:7} non corrisponde a src/: uso quella compilata"; fi
 }
 
 healthy() {
@@ -66,7 +67,6 @@ echo "$NEW" > "$SKIP_FILE"
 git reset -q --hard "$OLD"
 if deps_changed "$NEW" "$OLD"; then npm ci --no-audit --no-fund; fi
 npm run build
-git checkout -q -- dist
 pm2 restart "$APP" --update-env >/dev/null
 if healthy; then log "ripristinato ${OLD:0:7}"; else log "ATTENZIONE: anche ${OLD:0:7} non risponde su $HEALTH_URL"; fi
 exit 1
