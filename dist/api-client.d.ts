@@ -1,6 +1,7 @@
 /**
  * ProTask API Client
  */
+import { type MoveData } from './handoff.js';
 interface ApiResponse<T = unknown> {
     data?: T;
     success?: boolean;
@@ -22,6 +23,8 @@ export declare class ProTaskClient {
         password_confirmation: string;
     }): Promise<ApiResponse<unknown>>;
     listUsers(): Promise<ApiResponse<unknown>>;
+    getMyTasks(includeDone?: boolean): Promise<ApiResponse<unknown>>;
+    findPeople(projectId: number, q: string): Promise<ApiResponse<unknown>>;
     listWorkspaces(): Promise<ApiResponse<unknown>>;
     getWorkspace(id: number): Promise<ApiResponse<unknown>>;
     createWorkspace(data: {
@@ -76,7 +79,7 @@ export declare class ProTaskClient {
         is_done?: boolean;
     }): Promise<ApiResponse<unknown>>;
     deleteTask(id: number): Promise<ApiResponse<unknown>>;
-    moveTask(taskId: number, listId: number, order?: number): Promise<ApiResponse<unknown>>;
+    moveTask(taskId: number, data: MoveData): Promise<ApiResponse<unknown>>;
     addTaskAssignee(taskId: number, userId: number): Promise<ApiResponse<unknown>>;
     removeTaskAssignee(taskId: number, userId: number): Promise<ApiResponse<unknown>>;
     addTaskLabel(taskId: number, labelId: number): Promise<ApiResponse<unknown>>;

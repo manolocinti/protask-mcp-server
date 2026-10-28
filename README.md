@@ -29,6 +29,14 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 }
 ```
 
+### Server remoto (HTTP) con Claude Code
+
+```bash
+printf 'ProTask token: '; read -s PROTASK_TOKEN; echo; claude mcp add --transport http --scope user protask https://protask-mcp.ilmarketing.net/mcp/sse --header "Authorization: Bearer $PROTASK_TOKEN"; unset PROTASK_TOKEN
+```
+
+Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te lo chiede e premi Invio: non viene mostrato e non finisce nella history. Non condividerlo e non committarlo. `--scope user` lo registra per il tuo utente, non nel `.mcp.json` del progetto.
+
 ## Tools Disponibili
 
 ### Autenticazione
@@ -58,12 +66,14 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 - `protask_create_label` - Crea etichetta
 
 ### Tasks
+- `protask_my_tasks` - I miei task (compatti, solo aperti; `include_done: true` per includere anche i completati)
+- `protask_find_colleague` - Trasforma un nome in `user_id` cercando tra le persone di un progetto (`project_id`, `name`)
 - `protask_list_tasks` - Lista task
 - `protask_get_task` - Dettaglio task
 - `protask_create_task` - Crea task
 - `protask_update_task` - Aggiorna task
 - `protask_delete_task` - Elimina task
-- `protask_move_task` - Sposta task
+- `protask_move_task` - Sposta task: colonna con `list_id` oppure `list_name`; opzionali `message` (riassunto salvato come commento), `notify_user_ids` (max 20, solo persone indicate dall'utente) e `order`
 - `protask_add_task_assignee` - Assegna utente
 - `protask_remove_task_assignee` - Rimuovi assegnatario
 - `protask_add_task_label` - Aggiungi etichetta
@@ -77,7 +87,7 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 
 ### Comments
 - `protask_list_comments` - Lista commenti
-- `protask_create_comment` - Aggiungi commento
+- `protask_create_comment` - Aggiungi commento (avvisa tutti i membri del workspace; per avvisare solo alcune persone usa `protask_move_task` con `message` e `notify_user_ids`)
 
 ### Timers
 - `protask_get_active_timer` - Timer attivo

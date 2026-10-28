@@ -4,6 +4,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { ProTaskClient } from './api-client.js';
+import { toolResult, runMoveTask, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 
 const app = express();
 app.set('trust proxy', true);
@@ -28,7 +29,7 @@ const sessions = new Map<string, SSESession>();
 const tools = [
   // Auth
   { name: 'protask_get_me', description: 'Get current authenticated user information', inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_list_users', description: 'List all users in ProTask', inputSchema: { type: 'object', properties: {}, required: [] } },
+  { name: 'protask_list_users', description: DESCRIPTIONS.protask_list_users, inputSchema: { type: 'object', properties: {}, required: [] } },
   // Workspaces
   { name: 'protask_list_workspaces', description: 'List all workspaces the user has access to', inputSchema: { type: 'object', properties: {}, required: [] } },
   { name: 'protask_get_workspace', description: 'Get details of a specific workspace', inputSchema: { type: 'object', properties: { workspace_id: { type: 'number', description: 'Workspace ID' } }, required: ['workspace_id'] } },
@@ -36,12 +37,12 @@ const tools = [
   { name: 'protask_get_workspace_members', description: 'Get members of a workspace', inputSchema: { type: 'object', properties: { workspace_id: { type: 'number' } }, required: ['workspace_id'] } },
   // Projects
   { name: 'protask_list_projects', description: 'List all projects', inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_get_project', description: 'Get project details', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
+  { name: 'protask_get_project', description: DESCRIPTIONS.protask_get_project, inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
   { name: 'protask_create_project', description: 'Create a new project', inputSchema: { type: 'object', properties: { title: { type: 'string' }, workspace_id: { type: 'number' }, description: { type: 'string' } }, required: ['title', 'workspace_id'] } },
   { name: 'protask_update_project', description: 'Update a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['project_id'] } },
   { name: 'protask_delete_project', description: 'Delete a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
   // Board Lists
-  { name: 'protask_list_board_lists', description: 'List board lists in a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
+  { name: 'protask_list_board_lists', description: DESCRIPTIONS.protask_list_board_lists, inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
   { name: 'protask_create_board_list', description: 'Create a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'name'] } },
   { name: 'protask_update_board_list', description: 'Update a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'list_id'] } },
   { name: 'protask_delete_board_list', description: 'Delete a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' } }, required: ['project_id', 'list_id'] } },
@@ -49,13 +50,15 @@ const tools = [
   { name: 'protask_list_labels', description: 'List labels in a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
   { name: 'protask_create_label', description: 'Create a label', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'name', 'color'] } },
   // Tasks
-  { name: 'protask_list_tasks', description: 'List tasks', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' } }, required: [] } },
-  { name: 'protask_get_task', description: 'Get task details', inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_create_task', description: 'Create a task', inputSchema: { type: 'object', properties: { title: { type: 'string' }, list_id: { type: 'number' }, project_id: { type: 'number' }, description: { type: 'string' }, due_date: { type: 'string' } }, required: ['title', 'list_id', 'project_id'] } },
+  { name: 'protask_my_tasks', description: DESCRIPTIONS.protask_my_tasks, inputSchema: { type: 'object', properties: { include_done: { type: 'boolean', description: 'Also return completed tasks (default: open tasks only)' } }, required: [] } },
+  { name: 'protask_find_colleague', description: DESCRIPTIONS.protask_find_colleague, inputSchema: { type: 'object', properties: { project_id: { type: 'number', description: 'Project where the task is or will be' }, name: { type: 'string', description: 'Name (or part of it) of the person' } }, required: ['project_id', 'name'] } },
+  { name: 'protask_list_tasks', description: DESCRIPTIONS.protask_list_tasks, inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' } }, required: [] } },
+  { name: 'protask_get_task', description: DESCRIPTIONS.protask_get_task, inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
+  { name: 'protask_create_task', description: DESCRIPTIONS.protask_create_task, inputSchema: { type: 'object', properties: { title: { type: 'string' }, list_id: { type: 'number' }, project_id: { type: 'number' }, description: { type: 'string' }, due_date: { type: 'string' } }, required: ['title', 'list_id', 'project_id'] } },
   { name: 'protask_update_task', description: 'Update a task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, title: { type: 'string' }, description: { type: 'string' }, due_date: { type: 'string' }, is_done: { type: 'boolean' } }, required: ['task_id'] } },
   { name: 'protask_delete_task', description: 'Delete a task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_move_task', description: 'Move task to another list', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, list_id: { type: 'number' }, order: { type: 'number' } }, required: ['task_id', 'list_id'] } },
-  { name: 'protask_add_task_assignee', description: 'Assign user to task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, user_id: { type: 'number' } }, required: ['task_id', 'user_id'] } },
+  { name: 'protask_move_task', description: DESCRIPTIONS.protask_move_task, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, list_id: { type: 'number', description: 'Target column id (alternative to list_name)' }, list_name: { type: 'string', description: 'Target column title (alternative to list_id)' }, message: { type: 'string', description: 'Short summary saved as a comment on the task' }, notify_user_ids: NOTIFY_USER_IDS_SCHEMA, order: { type: 'number' } }, required: ['task_id'] } },
+  { name: 'protask_add_task_assignee', description: DESCRIPTIONS.protask_add_task_assignee, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, user_id: { type: 'number' } }, required: ['task_id', 'user_id'] } },
   { name: 'protask_remove_task_assignee', description: 'Remove user from task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, user_id: { type: 'number' } }, required: ['task_id', 'user_id'] } },
   { name: 'protask_add_task_label', description: 'Add label to task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, label_id: { type: 'number' } }, required: ['task_id', 'label_id'] } },
   { name: 'protask_remove_task_label', description: 'Remove label from task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, label_id: { type: 'number' } }, required: ['task_id', 'label_id'] } },
@@ -65,8 +68,8 @@ const tools = [
   { name: 'protask_add_checklist_item', description: 'Add item to checklist', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, checklist_id: { type: 'number' }, name: { type: 'string' } }, required: ['task_id', 'checklist_id', 'name'] } },
   { name: 'protask_update_checklist_item', description: 'Update checklist item', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, checklist_id: { type: 'number' }, item_id: { type: 'number' }, name: { type: 'string' }, checked: { type: 'boolean' } }, required: ['task_id', 'checklist_id', 'item_id'] } },
   // Comments
-  { name: 'protask_list_comments', description: 'List comments on a task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_create_comment', description: 'Add comment to task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, comment: { type: 'string' } }, required: ['task_id', 'comment'] } },
+  { name: 'protask_list_comments', description: DESCRIPTIONS.protask_list_comments, inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
+  { name: 'protask_create_comment', description: DESCRIPTIONS.protask_create_comment, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, comment: { type: 'string' } }, required: ['task_id', 'comment'] } },
   // Timers
   { name: 'protask_get_active_timer', description: 'Get active timer', inputSchema: { type: 'object', properties: {}, required: [] } },
   { name: 'protask_get_my_timers', description: 'Get my timers', inputSchema: { type: 'object', properties: {}, required: [] } },
@@ -100,7 +103,9 @@ async function executeTool(client: ProTaskClient, name: string, args: Record<str
     case 'protask_create_task': return await client.createTask(args as { title: string; list_id: number; project_id: number; description?: string; due_date?: string });
     case 'protask_update_task': return await client.updateTask(args?.task_id as number, args as { title?: string; description?: string; due_date?: string; is_done?: boolean });
     case 'protask_delete_task': return await client.deleteTask(args?.task_id as number);
-    case 'protask_move_task': return await client.moveTask(args?.task_id as number, args?.list_id as number, args?.order as number | undefined);
+    case 'protask_move_task': return await runMoveTask(client, args);
+    case 'protask_my_tasks': return await client.getMyTasks(args?.include_done === true);
+    case 'protask_find_colleague': return await client.findPeople(args?.project_id as number, args?.name as string);
     case 'protask_add_task_assignee': return await client.addTaskAssignee(args?.task_id as number, args?.user_id as number);
     case 'protask_remove_task_assignee': return await client.removeTaskAssignee(args?.task_id as number, args?.user_id as number);
     case 'protask_add_task_label': return await client.addTaskLabel(args?.task_id as number, args?.label_id as number);
@@ -147,7 +152,7 @@ app.post('/mcp/tools/:toolName', async (req: Request, res: Response) => {
   const client = new ProTaskClient(token, 'https://protask.ilmarketing.net/api/v1');
   try {
     const result = await executeTool(client, toolName, req.body || {});
-    res.json({ success: true, data: result });
+    res.json({ success: !toolResult(result).isError, data: result });
   } catch (error) {
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
   }
@@ -166,15 +171,14 @@ app.post('/mcp', async (req: Request, res: Response) => {
     let result: unknown;
     switch (method) {
       case 'initialize':
-        result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'protask-mcp-server', version: '1.0.0' } };
+        result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }, instructions: SERVER_INSTRUCTIONS };
         break;
       case 'tools/list':
         result = { tools };
         break;
       case 'tools/call':
         const { name, arguments: args } = params;
-        const toolResult = await executeTool(client, name, args || {});
-        result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+        result = toolResult(await executeTool(client, name, args || {}));
         break;
       default:
         res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
@@ -252,7 +256,8 @@ app.post('/mcp/message', async (req: Request, res: Response) => {
         result = {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }
+          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' },
+          instructions: SERVER_INSTRUCTIONS
         };
         break;
 
@@ -267,8 +272,7 @@ app.post('/mcp/message', async (req: Request, res: Response) => {
 
       case 'tools/call':
         const { name, arguments: args } = params;
-        const toolResult = await executeTool(session.client, name, args || {});
-        result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+        result = toolResult(await executeTool(session.client, name, args || {}));
         break;
 
       case 'ping':
@@ -316,7 +320,8 @@ app.post('/mcp/sse', async (req: Request, res: Response) => {
         result = {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }
+          serverInfo: { name: 'protask-mcp-server', version: '1.0.0' },
+          instructions: SERVER_INSTRUCTIONS
         };
         break;
 
@@ -330,8 +335,7 @@ app.post('/mcp/sse', async (req: Request, res: Response) => {
 
       case 'tools/call':
         const { name, arguments: args } = params;
-        const toolResult = await executeTool(client, name, args || {});
-        result = { content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }] };
+        result = toolResult(await executeTool(client, name, args || {}));
         break;
 
       case 'ping':

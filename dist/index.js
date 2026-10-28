@@ -3,6 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 import { ProTaskClient } from './api-client.js';
+import { toolResult, runMoveTask, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 // Get token from environment
 const PROTASK_TOKEN = process.env.PROTASK_TOKEN;
 const PROTASK_API_URL = process.env.PROTASK_API_URL;
@@ -39,7 +40,7 @@ const tools = [
     },
     {
         name: 'protask_list_users',
-        description: 'List all users in ProTask',
+        description: DESCRIPTIONS.protask_list_users,
         inputSchema: {
             type: 'object',
             properties: {},
@@ -103,7 +104,7 @@ const tools = [
     },
     {
         name: 'protask_get_project',
-        description: 'Get details of a specific project',
+        description: DESCRIPTIONS.protask_get_project,
         inputSchema: {
             type: 'object',
             properties: {
@@ -152,7 +153,7 @@ const tools = [
     // Board Lists
     {
         name: 'protask_list_board_lists',
-        description: 'List all board lists (columns) in a project',
+        description: DESCRIPTIONS.protask_list_board_lists,
         inputSchema: {
             type: 'object',
             properties: {
@@ -227,8 +228,31 @@ const tools = [
     },
     // Tasks
     {
+        name: 'protask_my_tasks',
+        description: DESCRIPTIONS.protask_my_tasks,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                include_done: { type: 'boolean', description: 'Also return completed tasks (default: open tasks only)' },
+            },
+            required: [],
+        },
+    },
+    {
+        name: 'protask_find_colleague',
+        description: DESCRIPTIONS.protask_find_colleague,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                project_id: { type: 'number', description: 'Project where the task is or will be' },
+                name: { type: 'string', description: 'Name (or part of it) of the person' },
+            },
+            required: ['project_id', 'name'],
+        },
+    },
+    {
         name: 'protask_list_tasks',
-        description: 'List tasks, optionally filtered by project or list',
+        description: DESCRIPTIONS.protask_list_tasks,
         inputSchema: {
             type: 'object',
             properties: {
@@ -240,7 +264,7 @@ const tools = [
     },
     {
         name: 'protask_get_task',
-        description: 'Get details of a specific task including checklists, comments, etc.',
+        description: DESCRIPTIONS.protask_get_task,
         inputSchema: {
             type: 'object',
             properties: {
@@ -251,7 +275,7 @@ const tools = [
     },
     {
         name: 'protask_create_task',
-        description: 'Create a new task',
+        description: DESCRIPTIONS.protask_create_task,
         inputSchema: {
             type: 'object',
             properties: {
@@ -292,20 +316,23 @@ const tools = [
     },
     {
         name: 'protask_move_task',
-        description: 'Move a task to a different list',
+        description: DESCRIPTIONS.protask_move_task,
         inputSchema: {
             type: 'object',
             properties: {
                 task_id: { type: 'number', description: 'Task ID' },
-                list_id: { type: 'number', description: 'Target list ID' },
+                list_id: { type: 'number', description: 'Target column id (alternative to list_name)' },
+                list_name: { type: 'string', description: 'Target column title (alternative to list_id)' },
+                message: { type: 'string', description: 'Short summary saved as a comment on the task' },
+                notify_user_ids: NOTIFY_USER_IDS_SCHEMA,
                 order: { type: 'number', description: 'Position in list (optional)' },
             },
-            required: ['task_id', 'list_id'],
+            required: ['task_id'],
         },
     },
     {
         name: 'protask_add_task_assignee',
-        description: 'Assign a user to a task',
+        description: DESCRIPTIONS.protask_add_task_assignee,
         inputSchema: {
             type: 'object',
             properties: {
@@ -406,7 +433,7 @@ const tools = [
     // Comments
     {
         name: 'protask_list_comments',
-        description: 'List all comments on a task',
+        description: DESCRIPTIONS.protask_list_comments,
         inputSchema: {
             type: 'object',
             properties: {
@@ -417,7 +444,7 @@ const tools = [
     },
     {
         name: 'protask_create_comment',
-        description: 'Add a comment to a task',
+        description: DESCRIPTIONS.protask_create_comment,
         inputSchema: {
             type: 'object',
             properties: {
@@ -492,6 +519,7 @@ const server = new Server({
     capabilities: {
         tools: {},
     },
+    instructions: SERVER_INSTRUCTIONS,
 });
 // Handle list tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -585,7 +613,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result = await client.deleteTask(args?.task_id);
                 break;
             case 'protask_move_task':
-                result = await client.moveTask(args?.task_id, args?.list_id, args?.order);
+                result = await runMoveTask(client, args ?? {});
+                break;
+            case 'protask_my_tasks':
+                result = await client.getMyTasks(args?.include_done === true);
+                break;
+            case 'protask_find_colleague':
+                result = await client.findPeople(args?.project_id, args?.name);
                 break;
             case 'protask_add_task_assignee':
                 result = await client.addTaskAssignee(args?.task_id, args?.user_id);
@@ -641,9 +675,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     isError: true,
                 };
         }
-        return {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
+        return toolResult(result);
     }
     catch (error) {
         return {
