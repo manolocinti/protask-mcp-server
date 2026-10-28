@@ -314,8 +314,11 @@ export class ProTaskClient {
   async createComment(taskId: number, data: { comment: string }) {
     return this.request(`/tasks/${taskId}/comments`, {
       method: 'POST',
-      // il web mostra i commenti con v-html: il testo va escapato e gli a capo diventano <br>
-      body: JSON.stringify({ body: escapeCommentHtml(data.comment) }),
+      // il web mostra i commenti con v-html: il testo va escapato e gli a capo diventano <br>.
+      // Se manca o non è una stringa passa com'è, così ProTask risponde 422 invece di salvare "undefined"
+      body: JSON.stringify({
+        body: typeof data.comment === 'string' ? escapeCommentHtml(data.comment) : data.comment,
+      }),
     });
   }
 
