@@ -66,7 +66,7 @@ Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te
 - `protask_create_label` - Crea etichetta
 
 ### Tasks
-- `protask_my_tasks` - I miei task (compatti, solo aperti; `include_done: true` per includere anche i completati)
+- `protask_my_tasks` - I miei task (compatti; esclusi quelli segnati come fatti, `include_done: true` per averli. Ci sono anche i task nelle colonne "Fatto" o "Concluso": la colonna sta in `list.title`)
 - `protask_find_colleague` - Trasforma un nome in `user_id` cercando tra le persone di un progetto (`project_id`, `name`)
 - `protask_list_tasks` - Lista task
 - `protask_get_task` - Dettaglio task

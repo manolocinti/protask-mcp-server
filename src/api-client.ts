@@ -6,6 +6,13 @@ import { escapeCommentHtml, type MoveData } from './handoff.js';
 
 const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
 
+// La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo
+function withEscapedDescription<T extends { description?: string }>(data: T): T {
+  return typeof data.description === 'string'
+    ? { ...data, description: escapeCommentHtml(data.description) }
+    : data;
+}
+
 interface ApiResponse<T = unknown> {
   data?: T;
   success?: boolean;
@@ -37,32 +44,35 @@ export class ProTaskClient {
     };
 
     try {
-      const response = await fetch(url, {
+      let response = await fetch(url, {
         ...options,
         headers,
         redirect: 'manual',
       });
 
-      // Handle redirects explicitly to preserve auth headers
+      // Redirect seguito a mano per tenere l'header Authorization, ma solo sullo stesso host:
+      // altrove il token non va mandato
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (location) {
-          const redirectResponse = await fetch(location, {
+          const target = new URL(location, url);
+          if (target.origin !== new URL(url).origin) {
+            return { error: `HTTP ${response.status}: redirect verso ${target.origin} non seguito (il token resta su ${new URL(url).origin})` };
+          }
+          response = await fetch(target.href, {
             ...options,
             headers,
+            redirect: 'manual',
           });
-          const data = await redirectResponse.json();
-          if (!redirectResponse.ok) {
-            return {
-              error: `HTTP ${redirectResponse.status}: ${data.message || data.error || 'Request failed'}`,
-              errors: data.errors,
-            };
-          }
-          return data;
         }
       }
 
       const text = await response.text();
+      // 204 o corpo vuoto (es. DELETE): nessun dato da leggere
+      if (response.ok && text.trim() === '') {
+        return { success: true };
+      }
+
       let data: any;
       try {
         data = JSON.parse(text);
@@ -228,7 +238,7 @@ export class ProTaskClient {
   }) {
     return this.request('/tasks', {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify(withEscapedDescription(data)),
     });
   }
 
@@ -240,7 +250,7 @@ export class ProTaskClient {
   }) {
     return this.request(`/tasks/${id}`, {
       method: 'PUT',
-      body: JSON.stringify(data),
+      body: JSON.stringify(withEscapedDescription(data)),
     });
   }
 

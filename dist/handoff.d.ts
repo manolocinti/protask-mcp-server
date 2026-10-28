@@ -7,7 +7,7 @@ export type ToolResult = {
 };
 /** Wraps an API result for MCP; flags it as an error when it carries an `error` key. */
 export declare function toolResult(result: unknown): ToolResult;
-/** Finds a board column by name (trimmed, case-insensitive). Exactly one match or an error. */
+/** Finds a board column by name (spaces collapsed, case-insensitive). Exactly one match or an error. */
 export declare function resolveListByName(lists: {
     id: number;
     title: string;
@@ -16,6 +16,8 @@ export declare function resolveListByName(lists: {
 } | {
     error: string;
 };
+/** Boolean tool argument: some clients send "true"/"1" as strings. */
+export declare function isTrue(value: unknown): boolean;
 /** A move that asked for a notification must come back with `notified_user_ids` (older ProTask omits it). */
 export declare function checkMoveResponse(handoffRequested: boolean, response: unknown): unknown;
 export type MoveData = {
