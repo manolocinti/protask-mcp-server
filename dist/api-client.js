@@ -34,7 +34,7 @@ export class ProTaskClient {
                     const data = await redirectResponse.json();
                     if (!redirectResponse.ok) {
                         return {
-                            error: data.message || data.error || 'Request failed',
+                            error: `HTTP ${redirectResponse.status}: ${data.message || data.error || 'Request failed'}`,
                             errors: data.errors,
                         };
                     }
@@ -53,7 +53,7 @@ export class ProTaskClient {
             }
             if (!response.ok) {
                 return {
-                    error: data.message || data.error || 'Request failed',
+                    error: `HTTP ${response.status}: ${data.message || data.error || 'Request failed'}`,
                     errors: data.errors,
                 };
             }
@@ -78,6 +78,14 @@ export class ProTaskClient {
     // Users
     async listUsers() {
         return this.request('/users');
+    }
+    // Current user's tasks (compact; open only unless includeDone)
+    async getMyTasks(includeDone) {
+        return this.request(`/me/tasks${includeDone ? '?include_done=1' : ''}`);
+    }
+    // People of a project, filtered by name/email
+    async findPeople(projectId, q) {
+        return this.request(`/projects/${projectId}/people?q=${encodeURIComponent(q)}`);
     }
     // Workspaces
     async listWorkspaces() {
@@ -174,10 +182,10 @@ export class ProTaskClient {
     async deleteTask(id) {
         return this.request(`/tasks/${id}`, { method: 'DELETE' });
     }
-    async moveTask(taskId, listId, order) {
+    async moveTask(taskId, data) {
         return this.request(`/tasks/${taskId}/move`, {
             method: 'POST',
-            body: JSON.stringify({ list_id: listId, order }),
+            body: JSON.stringify(data),
         });
     }
     async addTaskAssignee(taskId, userId) {
@@ -232,7 +240,7 @@ export class ProTaskClient {
     async createComment(taskId, data) {
         return this.request(`/tasks/${taskId}/comments`, {
             method: 'POST',
-            body: JSON.stringify(data),
+            body: JSON.stringify({ body: data.comment }),
         });
     }
     // Timers

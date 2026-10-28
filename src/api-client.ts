@@ -2,6 +2,8 @@
  * ProTask API Client
  */
 
+import type { MoveData } from './handoff.js';
+
 const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
 
 interface ApiResponse<T = unknown> {
@@ -52,7 +54,7 @@ export class ProTaskClient {
           const data = await redirectResponse.json();
           if (!redirectResponse.ok) {
             return {
-              error: data.message || data.error || 'Request failed',
+              error: `HTTP ${redirectResponse.status}: ${data.message || data.error || 'Request failed'}`,
               errors: data.errors,
             };
           }
@@ -72,7 +74,7 @@ export class ProTaskClient {
 
       if (!response.ok) {
         return {
-          error: data.message || data.error || 'Request failed',
+          error: `HTTP ${response.status}: ${data.message || data.error || 'Request failed'}`,
           errors: data.errors,
         };
       }
@@ -106,6 +108,16 @@ export class ProTaskClient {
   // Users
   async listUsers() {
     return this.request('/users');
+  }
+
+  // Current user's tasks (compact; open only unless includeDone)
+  async getMyTasks(includeDone?: boolean) {
+    return this.request(`/me/tasks${includeDone ? '?include_done=1' : ''}`);
+  }
+
+  // People of a project, filtered by name/email
+  async findPeople(projectId: number, q: string) {
+    return this.request(`/projects/${projectId}/people?q=${encodeURIComponent(q)}`);
   }
 
   // Workspaces
@@ -236,10 +248,10 @@ export class ProTaskClient {
     return this.request(`/tasks/${id}`, { method: 'DELETE' });
   }
 
-  async moveTask(taskId: number, listId: number, order?: number) {
+  async moveTask(taskId: number, data: MoveData) {
     return this.request(`/tasks/${taskId}/move`, {
       method: 'POST',
-      body: JSON.stringify({ list_id: listId, order }),
+      body: JSON.stringify(data),
     });
   }
 
@@ -302,7 +314,7 @@ export class ProTaskClient {
   async createComment(taskId: number, data: { comment: string }) {
     return this.request(`/tasks/${taskId}/comments`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ body: data.comment }),
     });
   }
 

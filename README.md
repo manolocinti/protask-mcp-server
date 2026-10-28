@@ -29,6 +29,14 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 }
 ```
 
+### Server remoto (HTTP) con Claude Code
+
+```bash
+claude mcp add --transport http protask https://protask-mcp.ilmarketing.net/mcp/sse --header "Authorization: Bearer IL_TUO_TOKEN"
+```
+
+Sostituisci `IL_TUO_TOKEN` con il tuo token personale ProTask (non condividerlo e non committarlo).
+
 ## Tools Disponibili
 
 ### Autenticazione
@@ -58,12 +66,14 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 - `protask_create_label` - Crea etichetta
 
 ### Tasks
+- `protask_my_tasks` - I miei task (compatti, solo aperti; `include_done: true` per includere anche i completati)
+- `protask_find_colleague` - Trasforma un nome in `user_id` cercando tra le persone di un progetto (`project_id`, `name`)
 - `protask_list_tasks` - Lista task
 - `protask_get_task` - Dettaglio task
 - `protask_create_task` - Crea task
 - `protask_update_task` - Aggiorna task
 - `protask_delete_task` - Elimina task
-- `protask_move_task` - Sposta task
+- `protask_move_task` - Sposta task: colonna con `list_id` oppure `list_name`; opzionali `message` (riassunto salvato come commento), `notify_user_ids` (max 20, solo persone indicate dall'utente) e `order`
 - `protask_add_task_assignee` - Assegna utente
 - `protask_remove_task_assignee` - Rimuovi assegnatario
 - `protask_add_task_label` - Aggiungi etichetta
