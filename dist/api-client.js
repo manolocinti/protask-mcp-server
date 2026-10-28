@@ -1,13 +1,20 @@
 /**
  * ProTask API Client
  */
-import { escapeCommentHtml } from './handoff.js';
+import { escapeCommentHtml, htmlToText } from './handoff.js';
 const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
-// La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo
+// La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo.
+// Prima si riporta a testo, perché spesso è la descrizione riletta da get_task (già HTML)
 function withEscapedDescription(data) {
     return typeof data.description === 'string'
-        ? { ...data, description: escapeCommentHtml(data.description) }
+        ? { ...data, description: escapeCommentHtml(htmlToText(data.description)) }
         : data;
+}
+// Stesso host, anche passando da http a https: il token non va mandato altrove
+function sameHost(from, to) {
+    if (to.origin === from.origin)
+        return true;
+    return to.hostname === from.hostname && from.protocol === 'http:' && to.protocol === 'https:';
 }
 export class ProTaskClient {
     token;
@@ -25,30 +32,26 @@ export class ProTaskClient {
             ...(options.headers || {}),
         };
         try {
-            let response = await fetch(url, {
-                ...options,
-                headers,
-                redirect: 'manual',
-            });
-            // Redirect seguito a mano per tenere l'header Authorization, ma solo sullo stesso host:
-            // altrove il token non va mandato
-            if (response.status >= 300 && response.status < 400) {
+            // Redirect seguiti a mano (massimo 3) per tenere l'header Authorization, solo sullo stesso host
+            let current = new URL(url);
+            let response = await fetch(current.href, { ...options, headers, redirect: 'manual' });
+            for (let hops = 0; response.status >= 300 && response.status < 400; hops++) {
                 const location = response.headers.get('location');
-                if (location) {
-                    const target = new URL(location, url);
-                    if (target.origin !== new URL(url).origin) {
-                        return { error: `HTTP ${response.status}: redirect verso ${target.origin} non seguito (il token resta su ${new URL(url).origin})` };
-                    }
-                    response = await fetch(target.href, {
-                        ...options,
-                        headers,
-                        redirect: 'manual',
-                    });
+                if (!location)
+                    break;
+                const target = new URL(location, current);
+                if (!sameHost(current, target)) {
+                    return { error: `HTTP ${response.status}: redirect verso ${target.origin} non seguito (il token resta su ${current.origin})` };
                 }
+                if (hops === 3) {
+                    return { error: `HTTP ${response.status}: troppi redirect` };
+                }
+                current = target;
+                response = await fetch(current.href, { ...options, headers, redirect: 'manual' });
             }
             const text = await response.text();
-            // 204 o corpo vuoto (es. DELETE): nessun dato da leggere
-            if (response.ok && text.trim() === '') {
+            // 204, o DELETE senza corpo: nessun dato da leggere. Un 200 vuoto su altre chiamate resta un errore
+            if (response.status === 204 || (response.ok && text.trim() === '' && options.method === 'DELETE')) {
                 return { success: true };
             }
             let data;

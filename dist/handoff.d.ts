@@ -37,6 +37,12 @@ export declare function runMoveTask(client: MoveClient, args: Record<string, unk
  * and line breaks turned into <br>.
  */
 export declare function escapeCommentHtml(text: string): string;
+/**
+ * A task description read back from ProTask is HTML (web editor, or text already escaped by escapeCommentHtml).
+ * Before escaping it again it is turned into plain text, so a rewrite does not show tags or &amp;amp;.
+ * Formatting (bold, lists) becomes plain lines.
+ */
+export declare function htmlToText(html: string): string;
 /** Schema of `notify_user_ids`, shared by both transports. */
 export declare const NOTIFY_USER_IDS_SCHEMA: {
     readonly type: "array";

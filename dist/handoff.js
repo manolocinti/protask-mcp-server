@@ -91,6 +91,26 @@ export function escapeCommentHtml(text) {
         .replace(/'/g, '&#039;')
         .replace(/\r\n|\r|\n/g, '<br>');
 }
+/**
+ * A task description read back from ProTask is HTML (web editor, or text already escaped by escapeCommentHtml).
+ * Before escaping it again it is turned into plain text, so a rewrite does not show tags or &amp;amp;.
+ * Formatting (bold, lists) becomes plain lines.
+ */
+export function htmlToText(html) {
+    return String(html)
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+        .replace(/<li[^>]*>/gi, '- ')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#0?39;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
 /** Schema of `notify_user_ids`, shared by both transports. */
 export const NOTIFY_USER_IDS_SCHEMA = {
     type: 'array',
@@ -135,7 +155,7 @@ export const DESCRIPTIONS = {
         'The assignee sees the task in the ProTask notification bell. Do this after the task exists (protask_create_task).',
     protask_list_users: 'List all users of the ProTask instance. To find a colleague to assign or notify, use protask_find_colleague instead: it searches the people of one project and is the right way to get a user_id. ' +
         UNTRUSTED,
-    protask_update_task: 'Update a task. description is plain text: it is escaped and line breaks are kept. ' + UNTRUSTED,
+    protask_update_task: 'Update a task. description replaces the whole description and is saved as plain text (line breaks kept): bold, lists and other formatting of the current description are lost, so tell the user when you rewrite a formatted description. ' + UNTRUSTED,
     protask_list_workspaces: 'List all workspaces the user has access to. ' + UNTRUSTED,
     protask_get_workspace: 'Get the details of a workspace, including its projects. ' + UNTRUSTED,
     protask_get_workspace_members: 'Get the members of a workspace. ' + UNTRUSTED,

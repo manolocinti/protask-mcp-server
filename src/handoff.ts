@@ -123,6 +123,27 @@ export function escapeCommentHtml(text: string): string {
     .replace(/\r\n|\r|\n/g, '<br>');
 }
 
+/**
+ * A task description read back from ProTask is HTML (web editor, or text already escaped by escapeCommentHtml).
+ * Before escaping it again it is turned into plain text, so a rewrite does not show tags or &amp;amp;.
+ * Formatting (bold, lists) becomes plain lines.
+ */
+export function htmlToText(html: string): string {
+  return String(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '- ')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Schema of `notify_user_ids`, shared by both transports. */
 export const NOTIFY_USER_IDS_SCHEMA = {
   type: 'array',
@@ -191,7 +212,7 @@ export const DESCRIPTIONS: Record<string, string> = {
     UNTRUSTED,
 
   protask_update_task:
-    'Update a task. description is plain text: it is escaped and line breaks are kept. ' + UNTRUSTED,
+    'Update a task. description replaces the whole description and is saved as plain text (line breaks kept): bold, lists and other formatting of the current description are lost, so tell the user when you rewrite a formatted description. ' + UNTRUSTED,
 
   protask_list_workspaces:
     'List all workspaces the user has access to. ' + UNTRUSTED,

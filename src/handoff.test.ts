@@ -10,6 +10,7 @@ import {
   NOTIFY_USER_IDS_SCHEMA,
   escapeCommentHtml,
   isTrue,
+  htmlToText,
   type MoveClient,
   type MoveData,
 } from './handoff.js';
@@ -317,9 +318,10 @@ test('client: createTask e updateTask escapano la descrizione', async () => {
   const calls = stubFetch([json({ data: {} }), json({ data: {} })]);
   const c = new ProTaskClient('tok', API);
   await c.createTask({ title: 'T', list_id: 1, project_id: 1, description: '<img src=x onerror=alert(1)>\nriga' });
-  await c.updateTask(5, { description: 'a & b' });
-  assert.equal(JSON.parse(String(calls[0].init.body)).description, '&lt;img src=x onerror=alert(1)&gt;<br>riga');
-  assert.equal(JSON.parse(String(calls[1].init.body)).description, 'a &amp; b');
+  await c.updateTask(5, { description: 'a & b <script>x</script> 1 < 2' });
+  // il tag viene tolto (è HTML), il resto resta testo
+  assert.equal(JSON.parse(String(calls[0].init.body)).description, 'riga');
+  assert.equal(JSON.parse(String(calls[1].init.body)).description, 'a &amp; b x 1 &lt; 2');
 });
 
 test('client: updateTask senza descrizione non la aggiunge', async () => {
@@ -352,4 +354,33 @@ test('client: 204 senza corpo -> successo', async () => {
   stubFetch([new Response(null, { status: 204 })]);
   const r = await new ProTaskClient('tok', API).deleteTask(1);
   assert.deepEqual(r, { success: true });
+});
+
+test('htmlToText: HTML del web e testo gia escapato tornano testo', () => {
+  assert.equal(htmlToText('<p>Brief</p><ul><li>A</li><li>B &amp; C</li></ul>'), 'Brief\n- A\n- B & C');
+  assert.equal(htmlToText('a &amp; b<br>riga &lt;x&gt;'), 'a & b\nriga <x>');
+});
+
+test('client: descrizione riletta e riscritta non viene escapata due volte', async () => {
+  const calls = stubFetch([json({ data: {} })]);
+  await new ProTaskClient('tok', API).updateTask(5, { description: 'a &amp; b<br>nuova riga' });
+  assert.equal(JSON.parse(String(calls[0].init.body)).description, 'a &amp; b<br>nuova riga');
+});
+
+test('client: redirect da http a https sullo stesso host viene seguito', async () => {
+  const calls = stubFetch([redirect('https://protask.example/api/v1/auth/me'), json({ id: 2 })]);
+  const r = await new ProTaskClient('tok', 'http://protask.example/api/v1').me();
+  assert.equal(calls[1].url, 'https://protask.example/api/v1/auth/me');
+  assert.deepEqual(r, { id: 2 });
+});
+
+test('client: catena di due redirect sullo stesso host', async () => {
+  stubFetch([redirect('/a'), redirect('/b'), json({ id: 3 })]);
+  assert.deepEqual(await new ProTaskClient('tok', API).me(), { id: 3 });
+});
+
+test('client: 200 vuoto su una POST e un errore', async () => {
+  stubFetch([new Response('', { status: 200 })]);
+  const r = await new ProTaskClient('tok', API).createTask({ title: 'T', list_id: 1, project_id: 1 });
+  assert.ok('error' in r);
 });
