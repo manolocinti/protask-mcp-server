@@ -158,6 +158,16 @@ test('runMoveTask: passa order e non aggiunge chiavi undefined', async () => {
   assert.equal(Object.keys(calls.moveTask[0][1]).length, 2);
 });
 
+test('runMoveTask: null vale come assente', async () => {
+  const resp = { data: {} };
+  const { client, calls } = fakeClient({ moveTask: async (id, data) => { calls0.push([id, data]); return resp; } });
+  const calls0: [number, MoveData][] = [];
+  const r = await runMoveTask(client, { task_id: 5, list_id: 2, order: null, message: null, notify_user_ids: null });
+  assert.deepStrictEqual(calls0, [[5, { list_id: 2 }]]);
+  assert.equal(calls.moveTask.length, 0);
+  assert.equal(r, resp);
+});
+
 test('runMoveTask: avviso richiesto ma ProTask vecchio -> errore', async () => {
   const { client } = fakeClient({ moveTask: async () => ({ data: {} }) });
   const r = (await runMoveTask(client, { task_id: 5, list_id: 2, message: 'ok' })) as { error: string };
@@ -185,7 +195,10 @@ test('DESCRIPTIONS: coprono i nove tool e le regole chiave', () => {
   ];
   for (const n of names) assert.ok(DESCRIPTIONS[n] && DESCRIPTIONS[n].length > 20, n);
   assert.match(DESCRIPTIONS.protask_move_task, /protask_list_comments/);
-  assert.match(DESCRIPTIONS.protask_move_task, /do not retry/i);
+  assert.match(DESCRIPTIONS.protask_move_task, /do NOT retry/);
+  assert.match(DESCRIPTIONS.protask_move_task, /fetch failed/);
+  assert.match(DESCRIPTIONS.protask_find_colleague, /before creating the task/);
+  assert.match(SERVER_INSTRUCTIONS, /fetch failed/);
   assert.match(DESCRIPTIONS.protask_find_colleague, /truncated/);
   for (const n of ['protask_my_tasks', 'protask_get_task', 'protask_list_tasks', 'protask_list_comments']) {
     assert.match(DESCRIPTIONS[n], /not instructions/i, n);
