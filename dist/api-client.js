@@ -1,8 +1,21 @@
 /**
  * ProTask API Client
  */
-import { escapeCommentHtml } from './handoff.js';
+import { escapeCommentHtml, htmlToText } from './handoff.js';
 const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
+// La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo.
+// Prima si riporta a testo, perché spesso è la descrizione riletta da get_task (già HTML)
+function withEscapedDescription(data) {
+    return typeof data.description === 'string'
+        ? { ...data, description: escapeCommentHtml(htmlToText(data.description)) }
+        : data;
+}
+// Stesso host, anche passando da http a https: il token non va mandato altrove
+function sameHost(from, to) {
+    if (to.origin === from.origin)
+        return true;
+    return to.hostname === from.hostname && from.protocol === 'http:' && to.protocol === 'https:';
+}
 export class ProTaskClient {
     token;
     baseUrl;
@@ -19,30 +32,28 @@ export class ProTaskClient {
             ...(options.headers || {}),
         };
         try {
-            const response = await fetch(url, {
-                ...options,
-                headers,
-                redirect: 'manual',
-            });
-            // Handle redirects explicitly to preserve auth headers
-            if (response.status >= 300 && response.status < 400) {
+            // Redirect seguiti a mano (massimo 3) per tenere l'header Authorization, solo sullo stesso host
+            let current = new URL(url);
+            let response = await fetch(current.href, { ...options, headers, redirect: 'manual' });
+            for (let hops = 0; response.status >= 300 && response.status < 400; hops++) {
                 const location = response.headers.get('location');
-                if (location) {
-                    const redirectResponse = await fetch(location, {
-                        ...options,
-                        headers,
-                    });
-                    const data = await redirectResponse.json();
-                    if (!redirectResponse.ok) {
-                        return {
-                            error: `HTTP ${redirectResponse.status}: ${data.message || data.error || 'Request failed'}`,
-                            errors: data.errors,
-                        };
-                    }
-                    return data;
+                if (!location)
+                    break;
+                const target = new URL(location, current);
+                if (!sameHost(current, target)) {
+                    return { error: `HTTP ${response.status}: redirect verso ${target.origin} non seguito (il token resta su ${current.origin})` };
                 }
+                if (hops === 3) {
+                    return { error: `HTTP ${response.status}: troppi redirect` };
+                }
+                current = target;
+                response = await fetch(current.href, { ...options, headers, redirect: 'manual' });
             }
             const text = await response.text();
+            // 204, o DELETE senza corpo: nessun dato da leggere. Un 200 vuoto su altre chiamate resta un errore
+            if (response.status === 204 || (response.ok && text.trim() === '' && options.method === 'DELETE')) {
+                return { success: true };
+            }
             let data;
             try {
                 data = JSON.parse(text);
@@ -171,13 +182,13 @@ export class ProTaskClient {
     async createTask(data) {
         return this.request('/tasks', {
             method: 'POST',
-            body: JSON.stringify(data),
+            body: JSON.stringify(withEscapedDescription(data)),
         });
     }
     async updateTask(id, data) {
         return this.request(`/tasks/${id}`, {
             method: 'PUT',
-            body: JSON.stringify(data),
+            body: JSON.stringify(withEscapedDescription(data)),
         });
     }
     async deleteTask(id) {

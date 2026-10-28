@@ -3,7 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 import { ProTaskClient } from './api-client.js';
-import { toolResult, runMoveTask, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
+import { toolResult, runMoveTask, isTrue, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 // Get token from environment
 const PROTASK_TOKEN = process.env.PROTASK_TOKEN;
 const PROTASK_API_URL = process.env.PROTASK_API_URL;
@@ -50,7 +50,7 @@ const tools = [
     // Workspaces
     {
         name: 'protask_list_workspaces',
-        description: 'List all workspaces the user has access to',
+        description: DESCRIPTIONS.protask_list_workspaces,
         inputSchema: {
             type: 'object',
             properties: {},
@@ -59,7 +59,7 @@ const tools = [
     },
     {
         name: 'protask_get_workspace',
-        description: 'Get details of a specific workspace including projects',
+        description: DESCRIPTIONS.protask_get_workspace,
         inputSchema: {
             type: 'object',
             properties: {
@@ -83,7 +83,7 @@ const tools = [
     },
     {
         name: 'protask_get_workspace_members',
-        description: 'Get members of a workspace',
+        description: DESCRIPTIONS.protask_get_workspace_members,
         inputSchema: {
             type: 'object',
             properties: {
@@ -95,7 +95,7 @@ const tools = [
     // Projects
     {
         name: 'protask_list_projects',
-        description: 'List all projects the user has access to',
+        description: DESCRIPTIONS.protask_list_projects,
         inputSchema: {
             type: 'object',
             properties: {},
@@ -233,7 +233,7 @@ const tools = [
         inputSchema: {
             type: 'object',
             properties: {
-                include_done: { type: 'boolean', description: 'Also return completed tasks (default: open tasks only)' },
+                include_done: { type: 'boolean', description: 'Also return tasks marked done (default: left out)' },
             },
             required: [],
         },
@@ -290,7 +290,7 @@ const tools = [
     },
     {
         name: 'protask_update_task',
-        description: 'Update a task',
+        description: DESCRIPTIONS.protask_update_task,
         inputSchema: {
             type: 'object',
             properties: {
@@ -381,7 +381,7 @@ const tools = [
     // Checklists
     {
         name: 'protask_list_checklists',
-        description: 'List all checklists in a task',
+        description: DESCRIPTIONS.protask_list_checklists,
         inputSchema: {
             type: 'object',
             properties: {
@@ -457,7 +457,7 @@ const tools = [
     // Timers
     {
         name: 'protask_get_active_timer',
-        description: 'Get the currently running timer (if any)',
+        description: DESCRIPTIONS.protask_get_active_timer,
         inputSchema: {
             type: 'object',
             properties: {},
@@ -466,7 +466,7 @@ const tools = [
     },
     {
         name: 'protask_get_my_timers',
-        description: 'Get recent time entries for the current user',
+        description: DESCRIPTIONS.protask_get_my_timers,
         inputSchema: {
             type: 'object',
             properties: {},
@@ -616,7 +616,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 result = await runMoveTask(client, args ?? {});
                 break;
             case 'protask_my_tasks':
-                result = await client.getMyTasks(args?.include_done === true);
+                result = await client.getMyTasks(isTrue(args?.include_done));
                 break;
             case 'protask_find_colleague':
                 result = await client.findPeople(args?.project_id, args?.name);

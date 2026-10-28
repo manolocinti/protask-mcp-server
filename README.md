@@ -66,7 +66,7 @@ Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te
 - `protask_create_label` - Crea etichetta
 
 ### Tasks
-- `protask_my_tasks` - I miei task (compatti, solo aperti; `include_done: true` per includere anche i completati)
+- `protask_my_tasks` - I miei task (compatti; esclusi quelli segnati come fatti, `include_done: true` per averli. Ci sono anche i task nelle colonne "Fatto" o "Concluso": la colonna sta in `list.title`)
 - `protask_find_colleague` - Trasforma un nome in `user_id` cercando tra le persone di un progetto (`project_id`, `name`)
 - `protask_list_tasks` - Lista task
 - `protask_get_task` - Dettaglio task
@@ -111,3 +111,20 @@ curl -X POST https://protask.ilmarketing.net/api/v1/auth/login \
 ```
 
 2. Copia il token dalla risposta e usalo nella configurazione.
+
+## Aggiornamento automatico sul server
+
+Sul VPS il server gira con pm2 (`protask-mcp`) da un clone di `main`. `scripts/auto-update.sh` lo
+aggiorna da solo quando `main` cambia: fa `git fetch`, poi `npm ci` solo se cambiano le dipendenze,
+poi `npm test` (che fa anche la build), `pm2 restart` e il controllo di `http://127.0.0.1:3456/health`.
+Se test o health falliscono torna al commit di prima e salta quello nuovo finché `main` non cambia
+ancora. Con modifiche locali non committate non tocca niente.
+
+Si installa una volta sola, nel crontab dell'utente che fa girare pm2 (`crontab -e`):
+
+```
+*/5 * * * * $HOME/protask-mcp-server/scripts/auto-update.sh >> $HOME/protask-mcp-update.log 2>&1
+```
+
+Il log si legge con `tail $HOME/protask-mcp-update.log`. Variabili per cambiare i valori di default:
+`PROTASK_MCP_DIR`, `PROTASK_MCP_BRANCH`, `PROTASK_MCP_PM2_APP`, `PROTASK_MCP_HEALTH_URL`.
