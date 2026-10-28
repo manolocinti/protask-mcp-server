@@ -2,7 +2,7 @@
  * ProTask API Client
  */
 
-import type { MoveData } from './handoff.js';
+import { escapeCommentHtml, type MoveData } from './handoff.js';
 
 const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
 
@@ -314,7 +314,8 @@ export class ProTaskClient {
   async createComment(taskId: number, data: { comment: string }) {
     return this.request(`/tasks/${taskId}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ body: data.comment }),
+      // il web mostra i commenti con v-html: il testo va escapato e gli a capo diventano <br>
+      body: JSON.stringify({ body: escapeCommentHtml(data.comment) }),
     });
   }
 

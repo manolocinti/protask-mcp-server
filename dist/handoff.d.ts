@@ -30,5 +30,19 @@ export interface MoveClient {
     moveTask(taskId: number, data: MoveData): Promise<any>;
 }
 export declare function runMoveTask(client: MoveClient, args: Record<string, unknown>): Promise<unknown>;
+/**
+ * ProTask shows comments with v-html: text sent through the API must be escaped (same as the `message` of a move)
+ * and line breaks turned into <br>.
+ */
+export declare function escapeCommentHtml(text: string): string;
+/** Schema of `notify_user_ids`, shared by both transports. */
+export declare const NOTIFY_USER_IDS_SCHEMA: {
+    readonly type: "array";
+    readonly items: {
+        readonly type: "integer";
+    };
+    readonly maxItems: 20;
+    readonly description: "User ids to notify (max 20), only people the user named";
+};
 export declare const DESCRIPTIONS: Record<string, string>;
 export declare const SERVER_INSTRUCTIONS: string;

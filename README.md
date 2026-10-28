@@ -32,10 +32,10 @@ Aggiungi questa configurazione al file `~/.claude/claude_desktop_config.json`:
 ### Server remoto (HTTP) con Claude Code
 
 ```bash
-claude mcp add --transport http protask https://protask-mcp.ilmarketing.net/mcp/sse --header "Authorization: Bearer IL_TUO_TOKEN"
+printf 'ProTask token: '; read -s PROTASK_TOKEN; echo; claude mcp add --transport http --scope user protask https://protask-mcp.ilmarketing.net/mcp/sse --header "Authorization: Bearer $PROTASK_TOKEN"; unset PROTASK_TOKEN
 ```
 
-Sostituisci `IL_TUO_TOKEN` con il tuo token personale ProTask (non condividerlo e non committarlo).
+Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te lo chiede e premi Invio: non viene mostrato e non finisce nella history. Non condividerlo e non committarlo. `--scope user` lo registra per il tuo utente, non nel `.mcp.json` del progetto.
 
 ## Tools Disponibili
 
@@ -87,7 +87,7 @@ Sostituisci `IL_TUO_TOKEN` con il tuo token personale ProTask (non condividerlo 
 
 ### Comments
 - `protask_list_comments` - Lista commenti
-- `protask_create_comment` - Aggiungi commento
+- `protask_create_comment` - Aggiungi commento (avvisa tutti i membri del workspace; per avvisare solo alcune persone usa `protask_move_task` con `message` e `notify_user_ids`)
 
 ### Timers
 - `protask_get_active_timer` - Timer attivo

@@ -1,7 +1,7 @@
 /**
  * ProTask API Client
  */
-import type { MoveData } from './handoff.js';
+import { type MoveData } from './handoff.js';
 interface ApiResponse<T = unknown> {
     data?: T;
     success?: boolean;

@@ -3,7 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
 import { ProTaskClient } from './api-client.js';
-import { toolResult, runMoveTask, DESCRIPTIONS, SERVER_INSTRUCTIONS } from './handoff.js';
+import { toolResult, runMoveTask, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 // Get token from environment
 const PROTASK_TOKEN = process.env.PROTASK_TOKEN;
 const PROTASK_API_URL = process.env.PROTASK_API_URL;
@@ -104,7 +104,7 @@ const tools = [
     },
     {
         name: 'protask_get_project',
-        description: 'Get details of a specific project',
+        description: DESCRIPTIONS.protask_get_project,
         inputSchema: {
             type: 'object',
             properties: {
@@ -153,7 +153,7 @@ const tools = [
     // Board Lists
     {
         name: 'protask_list_board_lists',
-        description: 'List all board lists (columns) in a project',
+        description: DESCRIPTIONS.protask_list_board_lists,
         inputSchema: {
             type: 'object',
             properties: {
@@ -324,7 +324,7 @@ const tools = [
                 list_id: { type: 'number', description: 'Target column id (alternative to list_name)' },
                 list_name: { type: 'string', description: 'Target column title (alternative to list_id)' },
                 message: { type: 'string', description: 'Short summary saved as a comment on the task' },
-                notify_user_ids: { type: 'array', items: { type: 'number' }, description: 'User ids to notify (max 20), only people the user named' },
+                notify_user_ids: NOTIFY_USER_IDS_SCHEMA,
                 order: { type: 'number', description: 'Position in list (optional)' },
             },
             required: ['task_id'],
@@ -444,7 +444,7 @@ const tools = [
     },
     {
         name: 'protask_create_comment',
-        description: 'Add a comment to a task',
+        description: DESCRIPTIONS.protask_create_comment,
         inputSchema: {
             type: 'object',
             properties: {
