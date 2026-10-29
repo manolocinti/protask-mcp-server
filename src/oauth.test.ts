@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { app, createApp } from './app.js';
-import { createTokenVerifier } from './auth.js';
+import { createTokenVerifier, extractToken } from './auth.js';
 import { ProTaskClient, ProTaskUnauthorizedError } from './api-client.js';
-import { PROTASK_API_URL, RESOURCE_METADATA_URL } from './config.js';
+import { PROTASK_API_URL } from './config.js';
 
 let server: Server;
 let base: string;
@@ -57,7 +57,8 @@ test('health risponde', async () => {
 const fetchOriginale = globalThis.fetch;
 afterEach(() => { globalThis.fetch = fetchOriginale; });
 
-const SENZA_TOKEN = `Bearer resource_metadata="${RESOURCE_METADATA_URL}"`;
+// Letterali, non costruiti da config.ts: se cambia l'URL pubblico il test deve accorgersene
+const SENZA_TOKEN = 'Bearer resource_metadata="https://protask-mcp.ilmarketing.net/.well-known/oauth-protected-resource/mcp/sse"';
 const TOKEN_RIFIUTATO = `${SENZA_TOKEN}, error="invalid_token"`;
 
 type Chiamata = { path: string; auth: string | undefined };
@@ -65,7 +66,7 @@ type Risposta = Response | Error;
 
 // Stub di fetch per l'API di ProTask: le richieste del test all'app in ascolto passano all'originale.
 // Il gestore riceve il percorso (es. "/auth/me") e dà la risposta, o un Error per simulare la rete giù
-function stubApi(gestore: (path: string, n: number) => Risposta): Chiamata[] {
+function stubApi(gestore: (path: string, n: number) => Risposta | Promise<Risposta>): Chiamata[] {
   const chiamate: Chiamata[] = [];
   globalThis.fetch = (async (url: any, init: any) => {
     const u = String(url);
@@ -73,7 +74,7 @@ function stubApi(gestore: (path: string, n: number) => Risposta): Chiamata[] {
     assert.ok(u.startsWith(PROTASK_API_URL), `URL non previsto: ${u}`);
     const path = u.slice(PROTASK_API_URL.length);
     chiamate.push({ path, auth: init?.headers?.Authorization });
-    const r = gestore(path, chiamate.length);
+    const r = await gestore(path, chiamate.length);
     if (r instanceof Error) throw r;
     return r;
   }) as typeof fetch;
@@ -359,4 +360,125 @@ test('api-client non lancia sul 404', async () => {
   stubApi(() => risposta({ message: 'Not found' }, 404));
   const r = await new ProTaskClient('tok', PROTASK_API_URL).getTask(99);
   assert.match(String(r.error), /^HTTP 404/);
+});
+
+// ---------------------------------------------------------------------------
+// Task 9, giro 1
+// ---------------------------------------------------------------------------
+
+test('forget durante una verifica in corso: l esito vecchio non torna in memoria', async () => {
+  let sblocca!: () => void;
+  const bloccata = new Promise<void>((resolve) => { sblocca = resolve; });
+  // la prima chiamata resta in attesa e poi risponde 200; le successive rispondono 401
+  const chiamate = stubApi((_path, n) => (n === 1 ? bloccata.then(utenteOk) : risposta({}, 401)));
+
+  const v = createTokenVerifier({ apiUrl: PROTASK_API_URL });
+  const prima = v.verify('tok');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(chiamate.length, 1);
+
+  v.forget('tok');
+  assert.equal(await v.verify('tok'), 'invalid'); // nuova chiamata, non quella in corso
+  assert.equal(chiamate.length, 2);
+
+  sblocca();
+  assert.equal(await prima, 'ok'); // chi aspettava prima del forget riceve il suo esito...
+  assert.equal(await v.verify('tok'), 'invalid'); // ...ma non e finito in memoria
+  assert.equal(chiamate.length, 3);
+});
+
+test('sessione SSE: tools/call con 401 dell API chiude la sessione e fa richiamare /auth/me', async () => {
+  let apiMorta = false;
+  const chiamate = stubApi((path) => {
+    if (path === '/auth/me') return utenteOk();
+    return apiMorta ? risposta({ message: 'Unauthenticated.' }, 401) : risposta({ data: [] });
+  });
+  const s = await avvia();
+  try {
+    const { endpoint, lettore } = await apriSse(s.url, 'tok-sse-tool');
+    const tool = rpc('tools/call', { name: 'protask_my_tasks', arguments: {} });
+    assert.equal((await fetch(endpoint, { method: 'POST', headers: intest(), body: tool })).status, 200);
+    assert.equal(contaMe(chiamate), 1);
+
+    apiMorta = true;
+    const res = await fetch(endpoint, { method: 'POST', headers: intest(), body: tool });
+    assert.equal(res.status, 401);
+    assert.equal(res.headers.get('www-authenticate'), TOKEN_RIFIUTATO);
+
+    // sessione chiusa e rimossa
+    assert.equal((await lettore.read()).done, true);
+    const dopo = await fetch(endpoint, { method: 'POST', headers: intest('tok-sse-tool'), body: rpc('ping') });
+    assert.equal(dopo.status, 400);
+
+    // forget chiamato: la richiesta dopo con lo stesso token richiama /auth/me
+    const prima = contaMe(chiamate);
+    await fetch(s.url + '/mcp', { method: 'POST', headers: intest('tok-sse-tool'), body: rpc('initialize') });
+    assert.equal(contaMe(chiamate), prima + 1);
+  } finally { await s.chiudi(); }
+});
+
+test('sessione SSE: /auth/me in 503 sulla verifica da 503 e la sessione resta', async () => {
+  let giu = false;
+  stubApi(() => (giu ? risposta({ message: 'Service Unavailable' }, 503) : utenteOk()));
+  const s = await avvia({ ttlMs: 50 });
+  try {
+    const { endpoint, lettore } = await apriSse(s.url, 'tok-sse-503');
+    await new Promise((r) => setTimeout(r, 100)); // la memoria scade
+    giu = true;
+    const res = await fetch(endpoint, { method: 'POST', headers: intest(), body: rpc('ping', undefined, 3) });
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('www-authenticate'), null);
+    assert.equal(((await res.json()) as { error: { code: number } }).error.code, -32000);
+
+    // la sessione e ancora li: tornato su ProTask, lo stesso endpoint risponde
+    giu = false;
+    const ok = await fetch(endpoint, { method: 'POST', headers: intest(), body: rpc('ping') });
+    assert.equal(ok.status, 200);
+    await lettore.cancel();
+  } finally { await s.chiudi(); }
+});
+
+test('/auth/me in 403: 503 con un messaggio diverso da "non raggiungibile", e non si ricorda', async () => {
+  let stato = 403;
+  const chiamate = stubApi(() => (stato === 200 ? utenteOk() : risposta({ message: 'Forbidden' }, stato)));
+  const s = await avvia();
+  try {
+    for (const rifiuto of [403, 404, 302]) {
+      stato = rifiuto;
+      const res = await fetch(s.url + '/mcp', { method: 'POST', headers: intest('tok-403'), body: rpc('initialize', {}, 9) });
+      assert.equal(res.status, 503, String(rifiuto));
+      assert.equal(res.headers.get('www-authenticate'), null);
+      assert.deepEqual(await res.json(), {
+        jsonrpc: '2.0',
+        error: { code: -32000, message: `ProTask ha rifiutato la verifica del token (HTTP ${rifiuto})` },
+        id: 9,
+      });
+    }
+    assert.equal(contaMe(chiamate), 3);
+    stato = 200;
+    assert.equal((await fetch(s.url + '/mcp', { method: 'POST', headers: intest('tok-403'), body: rpc('initialize') })).status, 200);
+  } finally { await s.chiudi(); }
+});
+
+test('extractToken: uno o piu spazi dopo Bearer, il resto rifiutato come prima', () => {
+  const da = (authorization?: string) => extractToken({ headers: { authorization } } as any);
+  assert.equal(da('Bearer tok'), 'tok');
+  assert.equal(da('bearer tok'), 'tok');
+  assert.equal(da('BEARER   tok'), 'tok');
+  assert.equal(da('Bearer  tok'), 'tok');
+  for (const no of [undefined, '', 'Bearer', 'Bearer ', 'Basic tok', 'Bearer tok extra', 'Bearertok', ' Bearer tok']) {
+    assert.equal(da(no), null, String(no));
+  }
+});
+
+test('/auth/me: il corpo della risposta viene sempre scartato', async () => {
+  for (const stato of [200, 401, 403, 503]) {
+    let annullato = false;
+    globalThis.fetch = (async () => new Response(
+      new ReadableStream({ pull(c) { c.enqueue(new Uint8Array([1])); }, cancel() { annullato = true; } }),
+      { status: stato },
+    )) as typeof fetch;
+    await createTokenVerifier({ apiUrl: PROTASK_API_URL }).verify('tok');
+    assert.equal(annullato, true, `stato ${stato}`);
+  }
 });

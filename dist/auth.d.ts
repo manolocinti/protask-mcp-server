@@ -1,5 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
-export type VerifyResult = 'ok' | 'invalid' | 'unavailable';
+export type VerifyResult = 'ok' | 'invalid' | 'unavailable' | {
+    rejected: number;
+};
 export interface TokenVerifier {
     verify(token: string): Promise<VerifyResult>;
     forget(token: string): void;
@@ -17,7 +19,9 @@ export declare function sendUnauthorized(res: Response, opts: {
     jsonRpc?: boolean;
     id?: unknown;
 }): void;
-export declare function sendUnavailable(res: Response, id?: unknown): void;
+export declare function sendVerifyFailure(res: Response, result: 'unavailable' | {
+    rejected: number;
+}, id?: unknown): void;
 export declare function requireToken(verifier: TokenVerifier, { jsonRpc }?: {
     jsonRpc?: boolean;
 }): (req: Request, res: Response, next: NextFunction) => Promise<void>;

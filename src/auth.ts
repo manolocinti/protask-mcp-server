@@ -2,7 +2,9 @@ import crypto from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { RESOURCE_METADATA_URL } from './config.js';
 
-export type VerifyResult = 'ok' | 'invalid' | 'unavailable';
+// 'rejected': /auth/me ha risposto con uno stato imprevisto (403, 3xx, 404...). Non e un 401, quindi non si
+// fa rifare il login (HTTP 503 come 'unavailable'), ma il messaggio dice lo stato per distinguerlo da un disservizio
+export type VerifyResult = 'ok' | 'invalid' | 'unavailable' | { rejected: number };
 
 export interface TokenVerifier {
   verify(token: string): Promise<VerifyResult>;
@@ -14,18 +16,15 @@ export function wwwAuthenticate(invalidToken: boolean): string {
   return `Bearer resource_metadata="${RESOURCE_METADATA_URL}"` + (invalidToken ? ', error="invalid_token"' : '');
 }
 
-// Legge il token da "Authorization: Bearer <token>" (schema senza maiuscole)
+// Legge il token da "Authorization: Bearer <token>" (schema senza maiuscole, uno o piu spazi dopo)
 export function extractToken(req: Request): string | null {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return null;
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return null;
-  return parts[1];
+  const match = /^bearer +(\S+)$/i.exec(req.headers.authorization ?? '');
+  return match ? match[1] : null;
 }
 
 // Controlla il token su ProTask (GET /auth/me). Si ricorda solo l'esito positivo, per ttlMs: la chiave è
 // lo sha256 del token, mai il token in chiaro. Solo un 401 vale «token rifiutato»; timeout, rete, 5xx, 429
-// e ogni altra risposta imprevista sono «unavailable»: non si chiede un nuovo login per un disservizio
+// sono «unavailable»; ogni altro stato imprevisto è «rejected»: in nessun caso si chiede un nuovo login
 export function createTokenVerifier(
   { apiUrl, ttlMs = 60_000, max = 1000, timeoutMs = 5_000 }:
   { apiUrl: string; ttlMs?: number; max?: number; timeoutMs?: number },
@@ -53,8 +52,11 @@ export function createTokenVerifier(
         redirect: 'manual', // il token non segue i redirect
         signal: AbortSignal.timeout(timeoutMs),
       });
+      // il corpo non serve: si scarta sempre, perche la connessione torni libera
+      await response.body?.cancel().catch(() => undefined);
       if (response.status === 401) return 'invalid';
-      return response.ok ? 'ok' : 'unavailable';
+      if (response.ok) return 'ok';
+      return response.status >= 500 || response.status === 429 ? 'unavailable' : { rejected: response.status };
     } catch {
       return 'unavailable';
     }
@@ -70,16 +72,20 @@ export function createTokenVerifier(
       }
       let inCorso = pending.get(k);
       if (!inCorso) {
-        inCorso = ask(token).then((result) => {
-          if (result === 'ok') remember(k);
+        const questa: Promise<VerifyResult> = ask(token).then((result) => {
+          // se nel frattempo c'e stato un forget() la voce non e piu questa: l'esito non si ricorda
+          if (result === 'ok' && pending.get(k) === questa) remember(k);
           return result;
-        }).finally(() => pending.delete(k));
-        pending.set(k, inCorso);
+        }).finally(() => { if (pending.get(k) === questa) pending.delete(k); });
+        inCorso = questa;
+        pending.set(k, questa);
       }
       return inCorso;
     },
     forget(token) {
-      accepted.delete(key(token));
+      const k = key(token);
+      accepted.delete(k);
+      pending.delete(k); // una verifica gia partita non rimette 'ok' in memoria
     },
   };
 }
@@ -92,13 +98,13 @@ export function sendUnauthorized(res: Response, opts: { invalidToken: boolean; j
     : { error: 'Authorization required' });
 }
 
-// 503: ProTask non risponde, non si fa rifare il login
-export function sendUnavailable(res: Response, id?: unknown): void {
-  res.status(503).json({
-    jsonrpc: '2.0',
-    error: { code: -32000, message: 'ProTask non raggiungibile, riprova tra poco' },
-    id: id ?? null,
-  });
+// 503 quando la verifica non da ne 'ok' ne 'invalid': non si fa rifare il login. Il messaggio distingue
+// il disservizio dallo stato imprevisto di /auth/me
+export function sendVerifyFailure(res: Response, result: 'unavailable' | { rejected: number }, id?: unknown): void {
+  const message = result === 'unavailable'
+    ? 'ProTask non raggiungibile, riprova tra poco'
+    : `ProTask ha rifiutato la verifica del token (HTTP ${result.rejected})`;
+  res.status(503).json({ jsonrpc: '2.0', error: { code: -32000, message }, id: id ?? null });
 }
 
 // Middleware: token presente e accettato da ProTask, altrimenti 401 (o 503). Il token va in res.locals.token.
@@ -116,8 +122,8 @@ export function requireToken(verifier: TokenVerifier, { jsonRpc = false }: { jso
       sendUnauthorized(res, { invalidToken: true, jsonRpc, id });
       return;
     }
-    if (result === 'unavailable') {
-      sendUnavailable(res, id);
+    if (result !== 'ok') {
+      sendVerifyFailure(res, result, id);
       return;
     }
     res.locals.token = token;

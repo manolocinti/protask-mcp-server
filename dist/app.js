@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { ProTaskClient, ProTaskUnauthorizedError } from './api-client.js';
-import { createTokenVerifier, extractToken, requireToken, sendUnauthorized, sendUnavailable } from './auth.js';
+import { createTokenVerifier, extractToken, requireToken, sendUnauthorized, sendVerifyFailure } from './auth.js';
 import { PROTASK_API_URL, PROTASK_ISSUER, RESOURCE_URL } from './config.js';
 import { toolResult, runMoveTask, isTrue, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 // Define all tools
@@ -247,8 +247,8 @@ export function createApp(opts = {}) {
             sendUnauthorized(res, { invalidToken: true, jsonRpc: true, id });
             return;
         }
-        if (verdict === 'unavailable') {
-            sendUnavailable(res, id);
+        if (verdict !== 'ok') {
+            sendVerifyFailure(res, verdict, id);
             return;
         }
         console.log(`[MSG] Session ${sessionId} - Method: ${method}, ID: ${id}`);
