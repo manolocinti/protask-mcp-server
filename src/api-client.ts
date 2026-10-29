@@ -3,8 +3,7 @@
  */
 
 import { escapeCommentHtml, htmlToText, type MoveData } from './handoff.js';
-
-const BASE_URL = process.env.PROTASK_API_URL || 'https://protask.ilmarketing.net/api/v1';
+import { PROTASK_API_URL } from './config.js';
 
 // La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo.
 // Prima si riporta a testo, perché spesso è la descrizione riletta da get_task (già HTML)
@@ -34,7 +33,7 @@ export class ProTaskClient {
 
   constructor(token: string, baseUrl?: string) {
     this.token = token;
-    this.baseUrl = baseUrl || BASE_URL;
+    this.baseUrl = baseUrl || PROTASK_API_URL;
   }
 
   private async request<T>(
