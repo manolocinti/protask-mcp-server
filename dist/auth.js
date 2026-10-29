@@ -11,9 +11,14 @@ export function extractToken(req) {
 }
 // Controlla il token su ProTask (GET /auth/me). Si ricorda solo l'esito positivo, per ttlMs: la chiave è
 // lo sha256 del token, mai il token in chiaro. Solo un 401 vale «token rifiutato»; timeout, rete, 5xx, 429
-// sono «unavailable»; ogni altro stato imprevisto è «rejected»: in nessun caso si chiede un nuovo login
-export function createTokenVerifier({ apiUrl, ttlMs = 60_000, max = 1000, timeoutMs = 5_000 }) {
+// sono «unavailable»; ogni altro stato imprevisto è «rejected»: in nessun caso si chiede un nuovo login.
+// Per ogni IP del client si contano gli esiti 'invalid' (finestra fissa di invalidWindowMs): oltre maxInvalid,
+// un token non in memoria come 'ok' riceve {retryAfter} senza chiamare ProTask. ProTask vede tutte le verifiche
+// dall'IP di questo server e limita le anonime a 60/min: senza questo tetto, chi manda token inventati
+// esaurirebbe il limite e i colleghi con il token scaduto non riceverebbero piu il 401 che fa partire il refresh
+export function createTokenVerifier({ apiUrl, ttlMs = 60_000, max = 1000, timeoutMs = 5_000, maxInvalid = 20, invalidWindowMs = 60_000, maxIps = 10_000 }) {
     const accepted = new Map(); // sha256 -> scadenza (ms), in ordine di inserimento
+    const invalidPerIp = new Map(); // ip -> esiti 'invalid' nella finestra
     const pending = new Map(); // richieste in corso per lo stesso token
     const key = (token) => crypto.createHash('sha256').update(token).digest('hex');
     const remember = (k) => {
@@ -28,6 +33,31 @@ export function createTokenVerifier({ apiUrl, ttlMs = 60_000, max = 1000, timeou
                 accepted.delete(accepted.keys().next().value);
         }
         accepted.set(k, now + ttlMs);
+    };
+    // secondi da aspettare se l'IP ha esaurito gli 'invalid' della finestra, altrimenti 0
+    const throttledFor = (ip) => {
+        const entry = invalidPerIp.get(ip);
+        if (!entry || entry.resetAt <= Date.now() || entry.count < maxInvalid)
+            return 0;
+        return Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000));
+    };
+    const countInvalid = (ip) => {
+        const now = Date.now();
+        const entry = invalidPerIp.get(ip);
+        if (entry && entry.resetAt > now) {
+            entry.count++;
+            return;
+        }
+        invalidPerIp.delete(ip);
+        if (invalidPerIp.size >= maxIps) {
+            for (const [old, e] of invalidPerIp)
+                if (e.resetAt <= now)
+                    invalidPerIp.delete(old);
+            // ancora pieno: via il più vecchio
+            if (invalidPerIp.size >= maxIps)
+                invalidPerIp.delete(invalidPerIp.keys().next().value);
+        }
+        invalidPerIp.set(ip, { count: 1, resetAt: now + invalidWindowMs });
     };
     const ask = async (token) => {
         try {
@@ -49,13 +79,18 @@ export function createTokenVerifier({ apiUrl, ttlMs = 60_000, max = 1000, timeou
         }
     };
     return {
-        async verify(token) {
+        async verify(token, ip) {
             const k = key(token);
             const expires = accepted.get(k);
             if (expires !== undefined) {
                 if (expires > Date.now())
-                    return 'ok';
+                    return 'ok'; // un token già valido passa sempre, anche da un IP bloccato
                 accepted.delete(k);
+            }
+            if (ip !== undefined) {
+                const retryAfter = throttledFor(ip);
+                if (retryAfter > 0)
+                    return { retryAfter };
             }
             let inCorso = pending.get(k);
             if (!inCorso) {
@@ -69,7 +104,10 @@ export function createTokenVerifier({ apiUrl, ttlMs = 60_000, max = 1000, timeou
                 inCorso = questa;
                 pending.set(k, questa);
             }
-            return inCorso;
+            const result = await inCorso;
+            if (result === 'invalid' && ip !== undefined)
+                countInvalid(ip);
+            return result;
         },
         forget(token) {
             const k = key(token);
@@ -86,8 +124,17 @@ export function sendUnauthorized(res, opts) {
         : { error: 'Authorization required' });
 }
 // 503 quando la verifica non da ne 'ok' ne 'invalid': non si fa rifare il login. Il messaggio distingue
-// il disservizio dallo stato imprevisto di /auth/me
+// il disservizio dallo stato imprevisto di /auth/me. 429 con Retry-After se l'IP ha troppi token non validi
 export function sendVerifyFailure(res, result, id) {
+    if (typeof result === 'object' && 'retryAfter' in result) {
+        res.setHeader('Retry-After', String(result.retryAfter));
+        res.status(429).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Troppi token non validi da questo indirizzo, riprova tra un minuto' },
+            id: id ?? null,
+        });
+        return;
+    }
     const message = result === 'unavailable'
         ? 'ProTask non raggiungibile, riprova tra poco'
         : `ProTask ha rifiutato la verifica del token (HTTP ${result.rejected})`;
@@ -103,7 +150,7 @@ export function requireToken(verifier, { jsonRpc = false } = {}) {
             sendUnauthorized(res, { invalidToken: false, jsonRpc, id });
             return;
         }
-        const result = await verifier.verify(token);
+        const result = await verifier.verify(token, req.ip ?? 'sconosciuto');
         if (result === 'invalid') {
             sendUnauthorized(res, { invalidToken: true, jsonRpc, id });
             return;

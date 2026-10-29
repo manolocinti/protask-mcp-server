@@ -249,7 +249,7 @@ async function apriSse(url: string, token: string) {
 test('sessione SSE con token rifiutato: /mcp/message 401 e la sessione sparisce', async () => {
   let rifiuta = false;
   stubApi(() => (rifiuta ? risposta({ message: 'Unauthenticated.' }, 401) : utenteOk()));
-  const s = await avvia({ ttlMs: 50 });
+  const s = await avvia({ ttlMs: 100 });
   try {
     const { endpoint, lettore } = await apriSse(s.url, 'tok-sse');
     assert.match(endpoint, /\/mcp\/message\?sessionId=/);
@@ -260,7 +260,7 @@ test('sessione SSE con token rifiutato: /mcp/message 401 e la sessione sparisce'
 
     // scade la memoria e ProTask rifiuta il token
     rifiuta = true;
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 400));
     const res = await fetch(endpoint, { method: 'POST', headers: intest(), body: rpc('ping') });
     assert.equal(res.status, 401);
     assert.equal(res.headers.get('www-authenticate'), TOKEN_RIFIUTATO);
@@ -374,7 +374,8 @@ test('forget durante una verifica in corso: l esito vecchio non torna in memoria
 
   const v = createTokenVerifier({ apiUrl: PROTASK_API_URL });
   const prima = v.verify('tok');
-  await new Promise((r) => setTimeout(r, 10));
+  // aspetta che la prima chiamata sia partita, senza un tempo fisso
+  for (let i = 0; i < 200 && chiamate.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(chiamate.length, 1);
 
   v.forget('tok');
@@ -420,10 +421,10 @@ test('sessione SSE: tools/call con 401 dell API chiude la sessione e fa richiama
 test('sessione SSE: /auth/me in 503 sulla verifica da 503 e la sessione resta', async () => {
   let giu = false;
   stubApi(() => (giu ? risposta({ message: 'Service Unavailable' }, 503) : utenteOk()));
-  const s = await avvia({ ttlMs: 50 });
+  const s = await avvia({ ttlMs: 100 });
   try {
     const { endpoint, lettore } = await apriSse(s.url, 'tok-sse-503');
-    await new Promise((r) => setTimeout(r, 100)); // la memoria scade
+    await new Promise((r) => setTimeout(r, 400)); // la memoria scade
     giu = true;
     const res = await fetch(endpoint, { method: 'POST', headers: intest(), body: rpc('ping', undefined, 3) });
     assert.equal(res.status, 503);
@@ -481,4 +482,128 @@ test('/auth/me: il corpo della risposta viene sempre scartato', async () => {
     await createTokenVerifier({ apiUrl: PROTASK_API_URL }).verify('tok');
     assert.equal(annullato, true, `stato ${stato}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Giro finale (I1): limite sugli esiti 'invalid' per IP del client
+// ---------------------------------------------------------------------------
+
+// Il test fa da nginx: sta su loopback e manda X-Forwarded-For con l'indirizzo del client
+const daIp = (ip: string, token?: string) => ({ ...intest(token), 'X-Forwarded-For': ip });
+const MSG_TROPPI = 'Troppi token non validi da questo indirizzo, riprova tra un minuto';
+
+test('20 token non validi dallo stesso IP: 401; il 21esimo 429 senza chiamare ProTask', async () => {
+  const chiamate = stubApi((_path, n) => (n === 1 ? utenteOk() : risposta({ message: 'Unauthenticated.' }, 401)));
+  const s = await avvia();
+  try {
+    // un token buono, già in memoria come 'ok'
+    const buono = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('203.0.113.1', 'tok-buono'), body: rpc('initialize') });
+    assert.equal(buono.status, 200);
+
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('203.0.113.1', `inventato-${i}`), body: rpc('initialize') });
+      assert.equal(res.status, 401, `richiesta ${i}`);
+      assert.equal(res.headers.get('www-authenticate'), TOKEN_RIFIUTATO);
+    }
+    assert.equal(contaMe(chiamate), 21);
+
+    // il 21esimo: 429, JSON-RPC, Retry-After, ProTask non viene chiamato
+    const res = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('203.0.113.1', 'inventato-20'), body: rpc('initialize', {}, 7) });
+    assert.equal(res.status, 429);
+    assert.equal(res.headers.get('www-authenticate'), null);
+    const retry = Number(res.headers.get('retry-after'));
+    assert.ok(retry >= 1 && retry <= 60, `Retry-After ${retry}`);
+    assert.deepEqual(await res.json(), { jsonrpc: '2.0', error: { code: -32000, message: MSG_TROPPI }, id: 7 });
+    assert.equal(contaMe(chiamate), 21);
+
+    // vale anche per le altre route, comprese quelle senza corpo JSON-RPC
+    const sse = await fetch(s.url + '/mcp/sse', { headers: daIp('203.0.113.1', 'inventato-21') });
+    assert.equal(sse.status, 429);
+    assert.equal(contaMe(chiamate), 21);
+
+    // il token già valido in memoria passa sempre, anche da un IP bloccato
+    const ancoraBuono = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('203.0.113.1', 'tok-buono'), body: rpc('initialize') });
+    assert.equal(ancoraBuono.status, 200);
+    assert.equal(contaMe(chiamate), 21);
+
+    // un altro IP non è bloccato: il suo token inventato arriva a ProTask e riceve 401
+    const altro = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('203.0.113.2', 'inventato-altro'), body: rpc('initialize') });
+    assert.equal(altro.status, 401);
+    assert.equal(contaMe(chiamate), 22);
+  } finally { await s.chiudi(); }
+});
+
+test('X-Forwarded-For falsificato dal client: non aggira il limite e non blocca un altro IP', async () => {
+  const chiamate = stubApi(() => risposta({ message: 'Unauthenticated.' }, 401));
+  const s = await avvia();
+  try {
+    // nginx accoda l'IP che vede (198.51.100.9) a quanto manda il client: il client scrive 20 volte un IP diverso
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp(`10.9.9.${i}, 198.51.100.9`, `inv-${i}`), body: rpc('initialize') });
+      assert.equal(res.status, 401);
+    }
+    // cambiando ancora il valore falso resta lo stesso IP: bloccato
+    const bloccato = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('10.8.8.8, 198.51.100.9', 'inv-x'), body: rpc('initialize') });
+    assert.equal(bloccato.status, 429);
+    const prima = contaMe(chiamate);
+
+    // i valori scritti dal client non hanno bloccato nessun altro: 10.9.9.0 arriva a ProTask
+    const vittima = await fetch(s.url + '/mcp', { method: 'POST', headers: daIp('10.9.9.0', 'inv-vittima'), body: rpc('initialize') });
+    assert.equal(vittima.status, 401);
+    assert.equal(contaMe(chiamate), prima + 1);
+  } finally { await s.chiudi(); }
+});
+
+test('il limite sui token non validi riparte con la finestra, e gli esiti ok non contano', async () => {
+  let valido = false;
+  const chiamate = stubApi(() => (valido ? utenteOk() : risposta({ message: 'Unauthenticated.' }, 401)));
+  const v = createTokenVerifier({ apiUrl: PROTASK_API_URL, maxInvalid: 2, invalidWindowMs: 300 });
+  assert.equal(await v.verify('a', '1.1.1.1'), 'invalid');
+  assert.equal(await v.verify('b', '1.1.1.1'), 'invalid');
+  const bloccato = await v.verify('c', '1.1.1.1');
+  assert.ok(typeof bloccato === 'object' && 'retryAfter' in bloccato && bloccato.retryAfter === 1);
+  assert.equal(chiamate.length, 2);
+
+  // senza IP il limite non si applica; un 'ok' non si conta
+  valido = true;
+  assert.equal(await v.verify('d'), 'ok');
+  assert.equal(await v.verify('e', '2.2.2.2'), 'ok');
+  assert.equal(await v.verify('f', '2.2.2.2'), 'ok');
+  assert.equal(await v.verify('g', '2.2.2.2'), 'ok');
+
+  // finestra scaduta: l'IP torna a poter provare
+  valido = false;
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(await v.verify('h', '1.1.1.1'), 'invalid');
+});
+
+test('memoria dei conteggi per IP limitata a maxIps', async () => {
+  stubApi(() => risposta({ message: 'Unauthenticated.' }, 401));
+  const v = createTokenVerifier({ apiUrl: PROTASK_API_URL, maxInvalid: 1, maxIps: 2 });
+  assert.equal(await v.verify('a', '1.1.1.1'), 'invalid');
+  assert.equal(await v.verify('b', '2.2.2.2'), 'invalid');
+  assert.equal(await v.verify('c', '3.3.3.3'), 'invalid'); // il conteggio di 1.1.1.1 esce
+  assert.equal(await v.verify('d', '1.1.1.1'), 'invalid'); // ripartito da zero
+  assert.ok(typeof await v.verify('e', '3.3.3.3') === 'object'); // 3.3.3.3 è ancora conteggiato
+});
+
+test('sessione SSE: oltre il limite /mcp/message risponde 429 e la sessione resta', async () => {
+  let rifiuta = false;
+  stubApi(() => (rifiuta ? risposta({ message: 'Unauthenticated.' }, 401) : utenteOk()));
+  const s = await avvia({ ttlMs: 100 });
+  try {
+    const { endpoint, lettore } = await apriSse(s.url, 'tok-sse-429');
+    rifiuta = true;
+    for (let i = 0; i < 20; i++) {
+      await fetch(s.url + '/mcp', { method: 'POST', headers: intest(`inv-${i}`), body: rpc('initialize') });
+    }
+    await new Promise((r) => setTimeout(r, 400)); // la memoria del token della sessione scade
+    const res = await fetch(endpoint, { method: 'POST', headers: intest(), body: rpc('ping') });
+    assert.equal(res.status, 429);
+    assert.ok(res.headers.get('retry-after'));
+    // la sessione non è stata chiusa: dall'altro IP lo stesso endpoint verifica e riceve 401
+    const altroIp = await fetch(endpoint, { method: 'POST', headers: daIp('203.0.113.50'), body: rpc('ping') });
+    assert.equal(altroIp.status, 401);
+    await lettore.cancel().catch(() => undefined);
+  } finally { await s.chiudi(); }
 });

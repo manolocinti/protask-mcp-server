@@ -118,7 +118,10 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   const verifier = opts.verifier ?? createTokenVerifier({ apiUrl: PROTASK_API_URL });
   const sessions = new Map<string, SSESession>();
   const app = express();
-  app.set('trust proxy', true);
+  // Dietro nginx sulla stessa macchina: ci si fida di X-Forwarded-For solo se la connessione arriva da loopback,
+  // e si prende l'ultimo indirizzo non loopback (quello che nginx ha visto). Con `true` si userebbe il primo
+  // valore, che il client può falsificare: aggirerebbe il limite per IP o bloccherebbe l'IP di un altro
+  app.set('trust proxy', 'loopback');
   app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -259,7 +262,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
       sessions.delete(sessionId);
       session.res.end();
     };
-    const verdict = await verifier.verify(session.token);
+    const verdict = await verifier.verify(session.token, req.ip ?? 'sconosciuto');
     if (verdict === 'invalid') {
       chiudiSessione();
       sendUnauthorized(res, { invalidToken: true, jsonRpc: true, id });
