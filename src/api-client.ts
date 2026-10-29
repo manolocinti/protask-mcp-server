@@ -19,6 +19,15 @@ function sameHost(from: URL, to: URL): boolean {
   return to.hostname === from.hostname && from.protocol === 'http:' && to.protocol === 'https:';
 }
 
+// L'API ha risposto 401: token scaduto o scollegato. Si lancia (non diventa un {error}) perché
+// il server HTTP risponda 401 e il client OAuth rinnovi il token
+export class ProTaskUnauthorizedError extends Error {
+  constructor() {
+    super('HTTP 401: token non valido o scaduto');
+    this.name = 'ProTaskUnauthorizedError';
+  }
+}
+
 interface ApiResponse<T = unknown> {
   data?: T;
   success?: boolean;
@@ -67,6 +76,8 @@ export class ProTaskClient {
         response = await fetch(current.href, { ...options, headers, redirect: 'manual' });
       }
 
+      if (response.status === 401) throw new ProTaskUnauthorizedError();
+
       const text = await response.text();
       // 204, o DELETE senza corpo: nessun dato da leggere. Un 200 vuoto su altre chiamate resta un errore
       if (response.status === 204 || (response.ok && text.trim() === '' && options.method === 'DELETE')) {
@@ -91,6 +102,7 @@ export class ProTaskClient {
 
       return data;
     } catch (error) {
+      if (error instanceof ProTaskUnauthorizedError) throw error;
       return {
         error: error instanceof Error ? error.message : 'Unknown error',
       };

@@ -1,21 +1,18 @@
 import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import { ProTaskClient } from './api-client.js';
+import { ProTaskClient, ProTaskUnauthorizedError } from './api-client.js';
+import { createTokenVerifier, extractToken, requireToken, sendUnauthorized, sendUnavailable, type TokenVerifier } from './auth.js';
 import { PROTASK_API_URL, PROTASK_ISSUER, RESOURCE_URL } from './config.js';
 import { toolResult, runMoveTask, isTrue, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
 
-// Verifica dei token OAuth: il tipo vero nasce con il Task 9 (src/auth.ts). Per ora si accetta e si ignora
-type TokenVerifier = unknown;
-
-
-// Store active SSE sessions
+// Active SSE session (ogni app ha le sue, vedi createApp)
 interface SSESession {
   res: Response;
   token: string;
   client: ProTaskClient;
+  stop: () => void; // ferma il ping di keep-alive
 }
-const sessions = new Map<string, SSESession>();
 
 // Define all tools
 const tools = [
@@ -117,25 +114,25 @@ async function executeTool(client: ProTaskClient, name: string, args: Record<str
   }
 }
 
-// Extract token from Authorization header
-function extractToken(req: Request): string | null {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return null;
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return null;
-  return parts[1];
-}
-
 export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
-  void opts; // lo usa il Task 9
+  const verifier = opts.verifier ?? createTokenVerifier({ apiUrl: PROTASK_API_URL });
+  const sessions = new Map<string, SSESession>();
   const app = express();
   app.set('trust proxy', true);
   app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposedHeaders: ['WWW-Authenticate'],
   }));
   app.use(express.json());
+
+  // L'API ha risposto 401 durante un tool: il token è morto, si toglie dalla memoria e si risponde 401
+  // (invece di un errore del tool dentro un 200) così il client rinnova il token o chiede il login
+  const tokenMorto = (res: Response, token: string, jsonRpc: boolean, id?: unknown) => {
+    verifier.forget(token);
+    sendUnauthorized(res, { invalidToken: true, jsonRpc, id });
+  };
 
   // Documento RFC 9728: dice ai client OAuth chi rilascia i token per questa risorsa
   const protectedResource = (req: Request, res: Response) => {
@@ -160,26 +157,22 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   });
 
   // Call tool directly
-  app.post('/mcp/tools/:toolName', async (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (!token) { res.status(401).json({ error: 'Authorization required' }); return; }
+  app.post('/mcp/tools/:toolName', requireToken(verifier), async (req: Request, res: Response) => {
+    const token: string = res.locals.token;
     const { toolName } = req.params;
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
       const result = await executeTool(client, toolName, req.body || {});
       res.json({ success: !toolResult(result).isError, data: result });
     } catch (error) {
+      if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, false); return; }
       res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
   // MCP JSON-RPC endpoint
-  app.post('/mcp', async (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (!token) {
-      res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Authorization required' }, id: req.body?.id });
-      return;
-    }
+  app.post('/mcp', requireToken(verifier, { jsonRpc: true }), async (req: Request, res: Response) => {
+    const token: string = res.locals.token;
     const { method, params, id } = req.body;
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
@@ -201,17 +194,14 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
       }
       res.json({ jsonrpc: '2.0', result, id });
     } catch (error) {
+      if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, id); return; }
       res.json({ jsonrpc: '2.0', error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' }, id });
     }
   });
 
   // SSE endpoint - MCP protocol
-  app.get('/mcp/sse', (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (!token) {
-      res.status(401).json({ error: 'Authorization required' });
-      return;
-    }
+  app.get('/mcp/sse', requireToken(verifier), (req: Request, res: Response) => {
+    const token: string = res.locals.token;
 
     // Generate unique session ID
     const sessionId = crypto.randomUUID();
@@ -225,7 +215,6 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
 
     // Create client and store session
     const client = new ProTaskClient(token, PROTASK_API_URL);
-    sessions.set(sessionId, { res, token, client });
 
     // Send endpoint event - this tells the client where to POST messages
     const baseUrl = `${req.protocol}://${req.get('host')}`;
@@ -240,6 +229,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
         res.write(`:ping\n\n`);
       }
     }, 15000);
+    sessions.set(sessionId, { res, token, client, stop: () => clearInterval(keepAlive) });
 
     // Cleanup on close
     req.on('close', () => {
@@ -252,14 +242,33 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   // Message endpoint - receives JSON-RPC requests from mcp-remote
   app.post('/mcp/message', async (req: Request, res: Response) => {
     const sessionId = req.query.sessionId as string;
+    const session = sessions.get(sessionId);
 
-    if (!sessionId || !sessions.has(sessionId)) {
+    if (!session) {
+      // Senza sessione e senza token non c'è nulla da controllare: si manda al login. Con un token, la sessione è scaduta
+      if (!extractToken(req)) { sendUnauthorized(res, { invalidToken: false, jsonRpc: true, id: req.body?.id }); return; }
       res.status(400).json({ error: 'Invalid or expired session' });
       return;
     }
 
-    const session = sessions.get(sessionId)!;
     const { method, params, id } = req.body;
+
+    // Si controlla il token con cui è stata aperta la sessione; se ProTask lo rifiuta la sessione si chiude
+    const chiudiSessione = () => {
+      session.stop();
+      sessions.delete(sessionId);
+      session.res.end();
+    };
+    const verdict = await verifier.verify(session.token);
+    if (verdict === 'invalid') {
+      chiudiSessione();
+      sendUnauthorized(res, { invalidToken: true, jsonRpc: true, id });
+      return;
+    }
+    if (verdict === 'unavailable') {
+      sendUnavailable(res, id);
+      return;
+    }
 
     console.log(`[MSG] Session ${sessionId} - Method: ${method}, ID: ${id}`);
 
@@ -305,6 +314,11 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
       res.json(response);
 
     } catch (error) {
+      if (error instanceof ProTaskUnauthorizedError) {
+        chiudiSessione();
+        tokenMorto(res, session.token, true, id);
+        return;
+      }
       console.error(`[ERR] Session ${sessionId}:`, error);
       res.json({
         jsonrpc: '2.0',
@@ -315,13 +329,8 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   });
 
   // Also support POST to /mcp/sse for Streamable HTTP transport
-  app.post('/mcp/sse', async (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (!token) {
-      res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Authorization required' }, id: req.body?.id });
-      return;
-    }
-
+  app.post('/mcp/sse', requireToken(verifier, { jsonRpc: true }), async (req: Request, res: Response) => {
+    const token: string = res.locals.token;
     const client = new ProTaskClient(token, PROTASK_API_URL);
     const { method, params, id } = req.body;
 
@@ -364,6 +373,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
 
       res.json({ jsonrpc: '2.0', result, id });
     } catch (error) {
+      if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, id); return; }
       console.error(`[ERR] Direct POST:`, error);
       res.json({
         jsonrpc: '2.0',

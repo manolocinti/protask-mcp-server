@@ -2,6 +2,9 @@
  * ProTask API Client
  */
 import { type MoveData } from './handoff.js';
+export declare class ProTaskUnauthorizedError extends Error {
+    constructor();
+}
 interface ApiResponse<T = unknown> {
     data?: T;
     success?: boolean;
