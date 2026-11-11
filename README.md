@@ -39,8 +39,14 @@ Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te
 
 ## Tools Disponibili
 
+I tool sono definiti una volta sola in `src/tools.ts` (nome, descrizione, schema e dispatcher `executeTool`):
+li usano sia il server HTTP (`/mcp`, `/mcp/sse`, `/mcp/message`, `/mcp/tools`) sia quello stdio.
+Tool sconosciuti, parametri obbligatori mancanti e valori non validi tornano come risultato del tool con
+`isError: true`, così il modello legge il messaggio e corregge.
+
 ### Autenticazione
 - `protask_get_me` - Info utente corrente
+- `protask_list_users` - Lista utenti (per trovare un collega usa `protask_find_colleague`)
 
 ### Workspaces
 - `protask_list_workspaces` - Lista workspace
@@ -66,18 +72,29 @@ Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te
 - `protask_create_label` - Crea etichetta
 
 ### Tasks
-- `protask_my_tasks` - I miei task (compatti; esclusi quelli segnati come fatti, `include_done: true` per averli. Ci sono anche i task nelle colonne "Fatto" o "Concluso": la colonna sta in `list.title`)
+- `protask_my_tasks` - I miei task (compatti; esclusi quelli segnati come fatti, `include_done: true` per averli. Ci sono anche i task nelle colonne "Fatto" o "Concluso": la colonna sta in `list.title`). Accetta gli stessi filtri di `protask_list_tasks`
 - `protask_find_colleague` - Trasforma un nome in `user_id` cercando tra le persone di un progetto (`project_id`, `name`)
-- `protask_list_tasks` - Lista task
-- `protask_get_task` - Dettaglio task
-- `protask_create_task` - Crea task
-- `protask_update_task` - Aggiorna task
+- `protask_list_tasks` - Lista task. Filtri opzionali: `project_id`, `list_id`, `priority` (0-4 o parole, array o separati da virgola), `due` (`over` scaduti, `next_day` entro domani, `next_week` entro una settimana, `next_month` entro un mese, `null` senza scadenza; array o separati da virgola), `due_from` e `due_to` (YYYY-MM-DD)
+- `protask_get_task` - Dettaglio task, con `priority`, `priority_label` e `custom_fields`
+- `protask_create_task` - Crea task (`due_date` "YYYY-MM-DD" o "YYYY-MM-DD HH:MM", `priority`)
+- `protask_update_task` - Aggiorna task (cambia solo i campi passati)
 - `protask_delete_task` - Elimina task
 - `protask_move_task` - Sposta task: colonna con `list_id` oppure `list_name`; opzionali `message` (riassunto salvato come commento), `notify_user_ids` (max 20, solo persone indicate dall'utente) e `order`
 - `protask_add_task_assignee` - Assegna utente
 - `protask_remove_task_assignee` - Rimuovi assegnatario
 - `protask_add_task_label` - Aggiungi etichetta
 - `protask_remove_task_label` - Rimuovi etichetta
+
+Priorità: intero 0-4 (0 nessuna, 1 bassa, 2 media, 3 alta, 4 urgente). I tool accettano il numero o la parola
+(nessuna/bassa/media/alta/urgente oppure none/low/medium/high/urgent) e la convertono prima di chiamare l'API;
+un altro valore torna come errore del tool. Create e update mandano all'API solo i campi del loro schema:
+argomenti inventati dal modello non arrivano a ProTask.
+
+### Campi personalizzati
+Le definizioni sono globali (gli stessi campi su ogni task).
+- `protask_list_custom_fields` - Definizioni dei campi: `id`, `name`, `slug`, `type`, `options`, `is_required`
+- `protask_get_task_custom_fields` - Valori dei campi di un task (`task_id`)
+- `protask_set_task_custom_fields` - Imposta i valori (`task_id`, `values`: oggetto campo (id o slug) → valore; `null` o `""` svuota). Tipi: text, number, date `YYYY-MM-DD`, url, select (uno dei valori di `options`), checkbox (booleano, o array di valori se il campo ha `options`)
 
 ### Checklists
 - `protask_list_checklists` - Lista checklist
@@ -87,7 +104,7 @@ Il comando è su una sola riga. Incolla il tuo token personale ProTask quando te
 
 ### Comments
 - `protask_list_comments` - Lista commenti
-- `protask_create_comment` - Aggiungi commento (avvisa tutti i membri del workspace; per avvisare solo alcune persone usa `protask_move_task` con `message` e `notify_user_ids`)
+- `protask_create_comment` - Aggiungi commento (avvisa tutti i membri del workspace e non ha destinatari: per avvisare solo alcune persone usa `protask_move_task` con `message` e `notify_user_ids`)
 
 ### Timers
 - `protask_get_active_timer` - Timer attivo
