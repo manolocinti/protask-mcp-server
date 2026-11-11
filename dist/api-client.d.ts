@@ -2,6 +2,7 @@
  * ProTask API Client
  */
 import { type MoveData } from './handoff.js';
+import type { TaskFilters } from './filters.js';
 export declare class ProTaskUnauthorizedError extends Error {
     constructor();
 }
@@ -18,15 +19,10 @@ export declare class ProTaskClient {
     constructor(token: string, baseUrl?: string);
     private request;
     me(): Promise<ApiResponse<unknown>>;
-    registerUser(data: {
-        first_name: string;
-        last_name: string;
-        email: string;
-        password: string;
-        password_confirmation: string;
-    }): Promise<ApiResponse<unknown>>;
     listUsers(): Promise<ApiResponse<unknown>>;
-    getMyTasks(includeDone?: boolean): Promise<ApiResponse<unknown>>;
+    getMyTasks(filters?: {
+        include_done?: boolean;
+    } & TaskFilters): Promise<ApiResponse<unknown>>;
     findPeople(projectId: number, q: string): Promise<ApiResponse<unknown>>;
     listWorkspaces(): Promise<ApiResponse<unknown>>;
     getWorkspace(id: number): Promise<ApiResponse<unknown>>;
@@ -66,7 +62,7 @@ export declare class ProTaskClient {
     listTasks(filters?: {
         project_id?: number;
         list_id?: number;
-    }): Promise<ApiResponse<unknown>>;
+    } & TaskFilters): Promise<ApiResponse<unknown>>;
     getTask(id: number): Promise<ApiResponse<unknown>>;
     createTask(data: {
         title: string;
@@ -74,12 +70,14 @@ export declare class ProTaskClient {
         project_id: number;
         description?: string;
         due_date?: string;
+        priority?: number;
     }): Promise<ApiResponse<unknown>>;
     updateTask(id: number, data: {
         title?: string;
         description?: string;
         due_date?: string;
         is_done?: boolean;
+        priority?: number;
     }): Promise<ApiResponse<unknown>>;
     deleteTask(id: number): Promise<ApiResponse<unknown>>;
     moveTask(taskId: number, data: MoveData): Promise<ApiResponse<unknown>>;
@@ -87,6 +85,9 @@ export declare class ProTaskClient {
     removeTaskAssignee(taskId: number, userId: number): Promise<ApiResponse<unknown>>;
     addTaskLabel(taskId: number, labelId: number): Promise<ApiResponse<unknown>>;
     removeTaskLabel(taskId: number, labelId: number): Promise<ApiResponse<unknown>>;
+    listCustomFields(): Promise<ApiResponse<unknown>>;
+    getTaskCustomFields(taskId: number): Promise<ApiResponse<unknown>>;
+    setTaskCustomFields(taskId: number, values: Record<string, unknown>): Promise<ApiResponse<unknown>>;
     listChecklists(taskId: number): Promise<ApiResponse<unknown>>;
     createChecklist(taskId: number, data: {
         name: string;

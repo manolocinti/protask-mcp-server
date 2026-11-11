@@ -4,6 +4,15 @@
 
 import { escapeCommentHtml, htmlToText, type MoveData } from './handoff.js';
 import { PROTASK_API_URL } from './config.js';
+import type { TaskFilters } from './filters.js';
+
+// Query string dei filtri: solo i valori presenti
+function queryString(params: Record<string, string | number | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') q.append(k, String(v));
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
 
 // La descrizione del task si mostra con v-html come i commenti: va escapata allo stesso modo.
 // Prima si riporta a testo, perché spesso è la descrizione riletta da get_task (già HTML)
@@ -114,27 +123,15 @@ export class ProTaskClient {
     return this.request('/auth/me');
   }
 
-  async registerUser(data: {
-    first_name: string;
-    last_name: string;
-    email: string;
-    password: string;
-    password_confirmation: string;
-  }) {
-    return this.request('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
-  }
-
   // Users
   async listUsers() {
     return this.request('/users');
   }
 
-  // Current user's tasks (compact; open only unless includeDone)
-  async getMyTasks(includeDone?: boolean) {
-    return this.request(`/me/tasks${includeDone ? '?include_done=1' : ''}`);
+  // Current user's tasks (compact; open only unless include_done)
+  async getMyTasks(filters: { include_done?: boolean } & TaskFilters = {}) {
+    const { include_done, ...rest } = filters;
+    return this.request(`/me/tasks${queryString({ include_done: include_done ? 1 : undefined, ...rest })}`);
   }
 
   // People of a project, filtered by name/email
@@ -229,12 +226,9 @@ export class ProTaskClient {
   }
 
   // Tasks
-  async listTasks(filters?: { project_id?: number; list_id?: number }) {
-    const params = new URLSearchParams();
-    if (filters?.project_id) params.append('project_id', String(filters.project_id));
-    if (filters?.list_id) params.append('list_id', String(filters.list_id));
-    const query = params.toString() ? `?${params.toString()}` : '';
-    return this.request(`/tasks${query}`);
+  async listTasks(filters: { project_id?: number; list_id?: number } & TaskFilters = {}) {
+    const { project_id, list_id, ...rest } = filters;
+    return this.request(`/tasks${queryString({ project_id: project_id || undefined, list_id: list_id || undefined, ...rest })}`);
   }
 
   async getTask(id: number) {
@@ -247,6 +241,7 @@ export class ProTaskClient {
     project_id: number;
     description?: string;
     due_date?: string;
+    priority?: number;
   }) {
     return this.request('/tasks', {
       method: 'POST',
@@ -259,6 +254,7 @@ export class ProTaskClient {
     description?: string;
     due_date?: string;
     is_done?: boolean;
+    priority?: number;
   }) {
     return this.request(`/tasks/${id}`, {
       method: 'PUT',
@@ -297,6 +293,22 @@ export class ProTaskClient {
 
   async removeTaskLabel(taskId: number, labelId: number) {
     return this.request(`/tasks/${taskId}/labels/${labelId}`, { method: 'DELETE' });
+  }
+
+  // Custom fields (definizioni globali, valori per task)
+  async listCustomFields() {
+    return this.request('/custom-fields');
+  }
+
+  async getTaskCustomFields(taskId: number) {
+    return this.request(`/tasks/${taskId}/custom-fields`);
+  }
+
+  async setTaskCustomFields(taskId: number, values: Record<string, unknown>) {
+    return this.request(`/tasks/${taskId}/custom-fields`, {
+      method: 'PUT',
+      body: JSON.stringify({ values }),
+    });
   }
 
   // Checklists
