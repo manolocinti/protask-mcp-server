@@ -4,7 +4,8 @@ import crypto from 'crypto';
 import { ProTaskClient, ProTaskUnauthorizedError } from './api-client.js';
 import { createTokenVerifier, extractToken, requireToken, sendUnauthorized, sendVerifyFailure, type TokenVerifier } from './auth.js';
 import { PROTASK_API_URL, PROTASK_ISSUER, RESOURCE_URL } from './config.js';
-import { toolResult, runMoveTask, isTrue, DESCRIPTIONS, SERVER_INSTRUCTIONS, NOTIFY_USER_IDS_SCHEMA } from './handoff.js';
+import { toolResult, SERVER_INSTRUCTIONS } from './handoff.js';
+import { TOOLS, executeTool, isKnownTool } from './tools.js';
 
 // Active SSE session (ogni app ha le sue, vedi createApp)
 interface SSESession {
@@ -14,104 +15,56 @@ interface SSESession {
   stop: () => void; // ferma il ping di keep-alive
 }
 
-// Define all tools
-const tools = [
-  // Auth
-  { name: 'protask_get_me', description: 'Get current authenticated user information', inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_list_users', description: DESCRIPTIONS.protask_list_users, inputSchema: { type: 'object', properties: {}, required: [] } },
-  // Workspaces
-  { name: 'protask_list_workspaces', description: DESCRIPTIONS.protask_list_workspaces, inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_get_workspace', description: DESCRIPTIONS.protask_get_workspace, inputSchema: { type: 'object', properties: { workspace_id: { type: 'number', description: 'Workspace ID' } }, required: ['workspace_id'] } },
-  { name: 'protask_create_workspace', description: 'Create a new workspace', inputSchema: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, website: { type: 'string' } }, required: ['name'] } },
-  { name: 'protask_get_workspace_members', description: DESCRIPTIONS.protask_get_workspace_members, inputSchema: { type: 'object', properties: { workspace_id: { type: 'number' } }, required: ['workspace_id'] } },
-  // Projects
-  { name: 'protask_list_projects', description: DESCRIPTIONS.protask_list_projects, inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_get_project', description: DESCRIPTIONS.protask_get_project, inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
-  { name: 'protask_create_project', description: 'Create a new project', inputSchema: { type: 'object', properties: { title: { type: 'string' }, workspace_id: { type: 'number' }, description: { type: 'string' } }, required: ['title', 'workspace_id'] } },
-  { name: 'protask_update_project', description: 'Update a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['project_id'] } },
-  { name: 'protask_delete_project', description: 'Delete a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
-  // Board Lists
-  { name: 'protask_list_board_lists', description: DESCRIPTIONS.protask_list_board_lists, inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
-  { name: 'protask_create_board_list', description: 'Create a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'name'] } },
-  { name: 'protask_update_board_list', description: 'Update a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'list_id'] } },
-  { name: 'protask_delete_board_list', description: 'Delete a board list', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' } }, required: ['project_id', 'list_id'] } },
-  // Labels
-  { name: 'protask_list_labels', description: 'List labels in a project', inputSchema: { type: 'object', properties: { project_id: { type: 'number' } }, required: ['project_id'] } },
-  { name: 'protask_create_label', description: 'Create a label', inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, name: { type: 'string' }, color: { type: 'string' } }, required: ['project_id', 'name', 'color'] } },
-  // Tasks
-  { name: 'protask_my_tasks', description: DESCRIPTIONS.protask_my_tasks, inputSchema: { type: 'object', properties: { include_done: { type: 'boolean', description: 'Also return tasks marked done (default: left out)' } }, required: [] } },
-  { name: 'protask_find_colleague', description: DESCRIPTIONS.protask_find_colleague, inputSchema: { type: 'object', properties: { project_id: { type: 'number', description: 'Project where the task is or will be' }, name: { type: 'string', description: 'Name (or part of it) of the person' } }, required: ['project_id', 'name'] } },
-  { name: 'protask_list_tasks', description: DESCRIPTIONS.protask_list_tasks, inputSchema: { type: 'object', properties: { project_id: { type: 'number' }, list_id: { type: 'number' } }, required: [] } },
-  { name: 'protask_get_task', description: DESCRIPTIONS.protask_get_task, inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_create_task', description: DESCRIPTIONS.protask_create_task, inputSchema: { type: 'object', properties: { title: { type: 'string' }, list_id: { type: 'number' }, project_id: { type: 'number' }, description: { type: 'string' }, due_date: { type: 'string' } }, required: ['title', 'list_id', 'project_id'] } },
-  { name: 'protask_update_task', description: DESCRIPTIONS.protask_update_task, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, title: { type: 'string' }, description: { type: 'string' }, due_date: { type: 'string' }, is_done: { type: 'boolean' } }, required: ['task_id'] } },
-  { name: 'protask_delete_task', description: 'Delete a task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_move_task', description: DESCRIPTIONS.protask_move_task, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, list_id: { type: 'number', description: 'Target column id (alternative to list_name)' }, list_name: { type: 'string', description: 'Target column title (alternative to list_id)' }, message: { type: 'string', description: 'Short summary saved as a comment on the task' }, notify_user_ids: NOTIFY_USER_IDS_SCHEMA, order: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_add_task_assignee', description: DESCRIPTIONS.protask_add_task_assignee, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, user_id: { type: 'number' } }, required: ['task_id', 'user_id'] } },
-  { name: 'protask_remove_task_assignee', description: 'Remove user from task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, user_id: { type: 'number' } }, required: ['task_id', 'user_id'] } },
-  { name: 'protask_add_task_label', description: 'Add label to task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, label_id: { type: 'number' } }, required: ['task_id', 'label_id'] } },
-  { name: 'protask_remove_task_label', description: 'Remove label from task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, label_id: { type: 'number' } }, required: ['task_id', 'label_id'] } },
-  // Checklists
-  { name: 'protask_list_checklists', description: DESCRIPTIONS.protask_list_checklists, inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_create_checklist', description: 'Create a checklist', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, name: { type: 'string' } }, required: ['task_id', 'name'] } },
-  { name: 'protask_add_checklist_item', description: 'Add item to checklist', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, checklist_id: { type: 'number' }, name: { type: 'string' } }, required: ['task_id', 'checklist_id', 'name'] } },
-  { name: 'protask_update_checklist_item', description: 'Update checklist item', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, checklist_id: { type: 'number' }, item_id: { type: 'number' }, name: { type: 'string' }, checked: { type: 'boolean' } }, required: ['task_id', 'checklist_id', 'item_id'] } },
-  // Comments
-  { name: 'protask_list_comments', description: DESCRIPTIONS.protask_list_comments, inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_create_comment', description: DESCRIPTIONS.protask_create_comment, inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, comment: { type: 'string' } }, required: ['task_id', 'comment'] } },
-  // Timers
-  { name: 'protask_get_active_timer', description: DESCRIPTIONS.protask_get_active_timer, inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_get_my_timers', description: DESCRIPTIONS.protask_get_my_timers, inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'protask_start_timer', description: 'Start timer on task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, description: { type: 'string' } }, required: ['task_id'] } },
-  { name: 'protask_stop_timer', description: 'Stop timer on task', inputSchema: { type: 'object', properties: { task_id: { type: 'number' } }, required: ['task_id'] } },
-  { name: 'protask_add_manual_time', description: 'Add manual time entry', inputSchema: { type: 'object', properties: { task_id: { type: 'number' }, start: { type: 'string' }, end: { type: 'string' }, description: { type: 'string' } }, required: ['task_id', 'start', 'end'] } },
-];
+const INITIALIZE_RESULT = {
+  protocolVersion: '2024-11-05',
+  capabilities: { tools: {} },
+  serverInfo: { name: 'protask-mcp-server', version: '1.0.0' },
+  instructions: SERVER_INSTRUCTIONS,
+};
 
-// Handle tool execution
-async function executeTool(client: ProTaskClient, name: string, args: Record<string, unknown>): Promise<unknown> {
-  switch (name) {
-    case 'protask_get_me': return await client.me();
-    case 'protask_list_users': return await client.listUsers();
-    case 'protask_list_workspaces': return await client.listWorkspaces();
-    case 'protask_get_workspace': return await client.getWorkspace(args?.workspace_id as number);
-    case 'protask_create_workspace': return await client.createWorkspace(args as { name: string; description?: string; website?: string });
-    case 'protask_get_workspace_members': return await client.getWorkspaceMembers(args?.workspace_id as number);
-    case 'protask_list_projects': return await client.listProjects();
-    case 'protask_get_project': return await client.getProject(args?.project_id as number);
-    case 'protask_create_project': return await client.createProject(args as { title: string; workspace_id: number; description?: string });
-    case 'protask_update_project': return await client.updateProject(args?.project_id as number, args as { title?: string; description?: string });
-    case 'protask_delete_project': return await client.deleteProject(args?.project_id as number);
-    case 'protask_list_board_lists': return await client.listBoardLists(args?.project_id as number);
-    case 'protask_create_board_list': return await client.createBoardList(args?.project_id as number, args as { name: string; color?: string });
-    case 'protask_update_board_list': return await client.updateBoardList(args?.project_id as number, args?.list_id as number, args as { name?: string; color?: string });
-    case 'protask_delete_board_list': return await client.deleteBoardList(args?.project_id as number, args?.list_id as number);
-    case 'protask_list_labels': return await client.listLabels(args?.project_id as number);
-    case 'protask_create_label': return await client.createLabel(args?.project_id as number, args as { name: string; color: string });
-    case 'protask_list_tasks': return await client.listTasks(args as { project_id?: number; list_id?: number });
-    case 'protask_get_task': return await client.getTask(args?.task_id as number);
-    case 'protask_create_task': return await client.createTask(args as { title: string; list_id: number; project_id: number; description?: string; due_date?: string });
-    case 'protask_update_task': return await client.updateTask(args?.task_id as number, args as { title?: string; description?: string; due_date?: string; is_done?: boolean });
-    case 'protask_delete_task': return await client.deleteTask(args?.task_id as number);
-    case 'protask_move_task': return await runMoveTask(client, args);
-    case 'protask_my_tasks': return await client.getMyTasks(isTrue(args?.include_done));
-    case 'protask_find_colleague': return await client.findPeople(args?.project_id as number, args?.name as string);
-    case 'protask_add_task_assignee': return await client.addTaskAssignee(args?.task_id as number, args?.user_id as number);
-    case 'protask_remove_task_assignee': return await client.removeTaskAssignee(args?.task_id as number, args?.user_id as number);
-    case 'protask_add_task_label': return await client.addTaskLabel(args?.task_id as number, args?.label_id as number);
-    case 'protask_remove_task_label': return await client.removeTaskLabel(args?.task_id as number, args?.label_id as number);
-    case 'protask_list_checklists': return await client.listChecklists(args?.task_id as number);
-    case 'protask_create_checklist': return await client.createChecklist(args?.task_id as number, args as { name: string });
-    case 'protask_add_checklist_item': return await client.addChecklistItem(args?.task_id as number, args?.checklist_id as number, args as { name: string });
-    case 'protask_update_checklist_item': return await client.updateChecklistItem(args?.task_id as number, args?.checklist_id as number, args?.item_id as number, args as { name?: string; checked?: boolean });
-    case 'protask_list_comments': return await client.listComments(args?.task_id as number);
-    case 'protask_create_comment': return await client.createComment(args?.task_id as number, args as { comment: string });
-    case 'protask_get_active_timer': return await client.getActiveTimer();
-    case 'protask_get_my_timers': return await client.getMyTimers();
-    case 'protask_start_timer': return await client.startTimer(args?.task_id as number, args?.description as string | undefined);
-    case 'protask_stop_timer': return await client.stopTimer(args?.task_id as number);
-    case 'protask_add_manual_time': return await client.addManualTime(args?.task_id as number, args as { start: string; end: string; description?: string });
-    default: throw new Error(`Unknown tool: ${name}`);
+type RpcOutcome = { accepted: true } | { accepted?: false; body: Record<string, unknown> };
+
+const rpcError = (code: number, message: string, id: unknown): RpcOutcome =>
+  ({ body: { jsonrpc: '2.0', error: { code, message }, id: id ?? null } });
+
+/**
+ * Un messaggio JSON-RPC MCP, uguale per /mcp, POST /mcp/sse e /mcp/message.
+ * Le notifiche (notifications/*) non hanno risposta: 202. Tool sconosciuti, parametri mancanti
+ * ed errori dell'API tornano come risultato del tool con isError. Lancia solo ProTaskUnauthorizedError.
+ */
+export async function handleRpc(client: ProTaskClient, message: unknown): Promise<RpcOutcome> {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) {
+    return rpcError(-32600, 'Invalid Request', null);
   }
+  const { method, params, id } = message as { method?: unknown; params?: any; id?: unknown };
+  if (typeof method !== 'string') return rpcError(-32600, 'Invalid Request', id);
+  if (method.startsWith('notifications/')) return { accepted: true };
+
+  let result: unknown;
+  switch (method) {
+    case 'initialize':
+      result = INITIALIZE_RESULT;
+      break;
+    case 'ping':
+      result = {};
+      break;
+    case 'tools/list':
+      result = { tools: TOOLS };
+      break;
+    case 'tools/call': {
+      if (typeof params?.name !== 'string') return rpcError(-32602, 'Invalid params: manca il nome del tool (params.name)', id);
+      result = toolResult(await executeTool(client, params.name, params.arguments ?? {}));
+      break;
+    }
+    default:
+      return rpcError(-32601, `Method not found: ${method}`, id);
+  }
+  return { body: { jsonrpc: '2.0', result, id } };
+}
+
+function sendRpc(res: Response, outcome: RpcOutcome) {
+  if (outcome.accepted) res.status(202).end();
+  else res.json(outcome.body);
 }
 
 export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
@@ -156,13 +109,17 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
 
   // List tools
   app.get('/mcp/tools', (req: Request, res: Response) => {
-    res.json({ tools });
+    res.json({ tools: TOOLS });
   });
 
   // Call tool directly
   app.post('/mcp/tools/:toolName', requireToken(verifier), async (req: Request, res: Response) => {
     const token: string = res.locals.token;
     const { toolName } = req.params;
+    if (!isKnownTool(toolName)) {
+      res.status(404).json({ success: false, error: `Tool sconosciuto: ${toolName}` });
+      return;
+    }
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
       const result = await executeTool(client, toolName, req.body || {});
@@ -176,29 +133,12 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   // MCP JSON-RPC endpoint
   app.post('/mcp', requireToken(verifier, { jsonRpc: true }), async (req: Request, res: Response) => {
     const token: string = res.locals.token;
-    const { method, params, id } = req.body;
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
-      let result: unknown;
-      switch (method) {
-        case 'initialize':
-          result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'protask-mcp-server', version: '1.0.0' }, instructions: SERVER_INSTRUCTIONS };
-          break;
-        case 'tools/list':
-          result = { tools };
-          break;
-        case 'tools/call':
-          const { name, arguments: args } = params;
-          result = toolResult(await executeTool(client, name, args || {}));
-          break;
-        default:
-          res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
-          return;
-      }
-      res.json({ jsonrpc: '2.0', result, id });
+      sendRpc(res, await handleRpc(client, req.body));
     } catch (error) {
-      if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, id); return; }
-      res.json({ jsonrpc: '2.0', error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' }, id });
+      if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, req.body?.id); return; }
+      res.json({ jsonrpc: '2.0', error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' }, id: req.body?.id ?? null });
     }
   });
 
@@ -254,7 +194,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
       return;
     }
 
-    const { method, params, id } = req.body;
+    const { method, id } = req.body ?? {};
 
     // Si controlla il token con cui è stata aperta la sessione; se ProTask lo rifiuta la sessione si chiude
     const chiudiSessione = () => {
@@ -276,46 +216,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     console.log(`[MSG] Session ${sessionId} - Method: ${method}, ID: ${id}`);
 
     try {
-      let result: unknown;
-
-      switch (method) {
-        case 'initialize':
-          result = {
-            protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
-            serverInfo: { name: 'protask-mcp-server', version: '1.0.0' },
-            instructions: SERVER_INSTRUCTIONS
-          };
-          break;
-
-        case 'notifications/initialized':
-          // Client notification, no response needed
-          res.status(202).send('accepted');
-          return;
-
-        case 'tools/list':
-          result = { tools };
-          break;
-
-        case 'tools/call':
-          const { name, arguments: args } = params;
-          result = toolResult(await executeTool(session.client, name, args || {}));
-          break;
-
-        case 'ping':
-          result = {};
-          break;
-
-        default:
-          res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
-          return;
-      }
-
-      const response = { jsonrpc: '2.0', result, id };
-
-      // Send response back via HTTP (mcp-remote expects this)
-      res.json(response);
-
+      sendRpc(res, await handleRpc(session.client, req.body));
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) {
         chiudiSessione();
@@ -335,46 +236,12 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
   app.post('/mcp/sse', requireToken(verifier, { jsonRpc: true }), async (req: Request, res: Response) => {
     const token: string = res.locals.token;
     const client = new ProTaskClient(token, PROTASK_API_URL);
-    const { method, params, id } = req.body;
+    const { method, id } = req.body ?? {};
 
     console.log(`[HTTP] Direct POST - Method: ${method}, ID: ${id}`);
 
     try {
-      let result: unknown;
-
-      switch (method) {
-        case 'initialize':
-          result = {
-            protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
-            serverInfo: { name: 'protask-mcp-server', version: '1.0.0' },
-            instructions: SERVER_INSTRUCTIONS
-          };
-          break;
-
-        case 'notifications/initialized':
-          res.status(202).send('accepted');
-          return;
-
-        case 'tools/list':
-          result = { tools };
-          break;
-
-        case 'tools/call':
-          const { name, arguments: args } = params;
-          result = toolResult(await executeTool(client, name, args || {}));
-          break;
-
-        case 'ping':
-          result = {};
-          break;
-
-        default:
-          res.json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
-          return;
-      }
-
-      res.json({ jsonrpc: '2.0', result, id });
+      sendRpc(res, await handleRpc(client, req.body));
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, id); return; }
       console.error(`[ERR] Direct POST:`, error);

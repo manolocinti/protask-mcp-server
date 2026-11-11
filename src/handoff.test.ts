@@ -232,11 +232,12 @@ test('DESCRIPTIONS: create_comment avvisa tutto il workspace e rimanda a move_ta
   assert.ok(d, 'descrizione presente');
   assert.match(d, /ALL members of the workspace/);
   assert.match(d, /protask_move_task/);
-  assert.match(d, /notify_user_ids/);
-  assert.match(d, /message/);
+  assert.match(d, /message and notify_user_ids parameters/);
   assert.match(d, /same column/);
-  // stessa frase di move_task sui destinatari
-  assert.ok(d.includes(NOTIFY_RULE_FOR_TEST), 'riusa la frase di move_task');
+  // create_comment non ha destinatari: niente "notify_user_ids:" come se fosse un suo parametro
+  assert.match(d, /no recipients parameter/);
+  assert.doesNotMatch(d, /notify_user_ids:/);
+  assert.ok(!d.includes(NOTIFY_RULE_FOR_TEST), 'la regola sui destinatari sta solo in move_task');
   assert.ok(DESCRIPTIONS.protask_move_task.includes(NOTIFY_RULE_FOR_TEST));
 });
 
