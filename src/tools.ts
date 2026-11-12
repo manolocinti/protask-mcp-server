@@ -272,6 +272,7 @@ export const TOOLS: Tool[] = [
         task_id: id('Task ID'),
         list_id: id('Target column id (alternative to list_name)'),
         list_name: { type: 'string', description: 'Target column title (alternative to list_id)' },
+        project_id: id('Target project id, only to move the task into another project'),
         message: { type: 'string', description: 'Short summary saved as a comment on the task' },
         notify_user_ids: NOTIFY_USER_IDS_SCHEMA,
         order: { type: 'number', description: 'Position in list (optional)' },

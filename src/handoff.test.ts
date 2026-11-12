@@ -385,3 +385,19 @@ test('client: 200 vuoto su una POST e un errore', async () => {
   const r = await new ProTaskClient('tok', API).createTask({ title: 'T', list_id: 1, project_id: 1 });
   assert.ok('error' in r);
 });
+
+test('runMoveTask: con project_id e list_name cerca la colonna nel progetto di destinazione', async () => {
+  const { client, calls } = fakeClient();
+  await runMoveTask(client, { task_id: 5, project_id: 52, list_name: 'Approvazione Interna' });
+  assert.deepStrictEqual(calls.getTask, []);
+  assert.deepStrictEqual(calls.listBoardLists, [52]);
+  assert.deepStrictEqual(calls.moveTask[0][1], { list_id: 1, project_id: 52 });
+});
+
+test('runMoveTask: con project_id e list_id passa entrambi senza leggere il task', async () => {
+  const { client, calls } = fakeClient();
+  await runMoveTask(client, { task_id: 5, project_id: 52, list_id: 800 });
+  assert.deepStrictEqual(calls.getTask, []);
+  assert.deepStrictEqual(calls.listBoardLists, []);
+  assert.deepStrictEqual(calls.moveTask[0][1], { list_id: 800, project_id: 52 });
+});

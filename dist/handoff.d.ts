@@ -22,6 +22,7 @@ export declare function isTrue(value: unknown): boolean;
 export declare function checkMoveResponse(handoffRequested: boolean, response: unknown): unknown;
 export type MoveData = {
     list_id: number;
+    project_id?: number;
     order?: number;
     message?: string;
     notify_user_ids?: number[];
