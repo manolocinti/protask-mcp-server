@@ -48,17 +48,22 @@ export function checkMoveResponse(handoffRequested, response) {
 export async function runMoveTask(client, args) {
     const taskId = args.task_id;
     let listId = args.list_id;
+    // Spostamento in un altro progetto: la colonna (id o nome) va cercata nel progetto di destinazione
+    const targetProjectId = args.project_id != null ? args.project_id : undefined;
     if (listId === undefined || listId === null) {
         const listName = args.list_name;
         if (typeof listName !== 'string' || listName.trim() === '') {
             return { error: 'serve list_id oppure list_name' };
         }
-        const task = await client.getTask(taskId);
-        if (hasError(task))
-            return task;
-        const projectId = task?.data?.project_id;
-        if (typeof projectId !== 'number') {
-            return { error: 'ProTask non ha indicato il progetto del task' };
+        let projectId = targetProjectId;
+        if (projectId === undefined) {
+            const task = await client.getTask(taskId);
+            if (hasError(task))
+                return task;
+            projectId = task?.data?.project_id;
+            if (typeof projectId !== 'number') {
+                return { error: 'ProTask non ha indicato il progetto del task' };
+            }
         }
         const lists = await client.listBoardLists(projectId);
         if (hasError(lists))
@@ -69,6 +74,8 @@ export async function runMoveTask(client, args) {
         listId = resolved.id;
     }
     const data = { list_id: listId };
+    if (targetProjectId !== undefined)
+        data.project_id = targetProjectId;
     if (args.order != null)
         data.order = args.order;
     if (args.message != null)
@@ -144,6 +151,9 @@ export const DESCRIPTIONS = {
         'message: a short summary of what was done, written for the person who has to check it; it is saved as a comment on the task. ' +
         'notify_user_ids: user ids (max 20) to notify. ' + NOTIFY_RULE + ' ' +
         'order: optional position in the column. ' +
+        'project_id: optional, to move the task into another project (its id from protask_list_projects); the column (list_id or list_name) must then belong to that project. ' +
+        'Labels are per project: each one is switched to the label with the same name in the target project, otherwise removed; assignees outside the target workspace are removed. Checklists, comments, attachments, timers and custom fields stay with the task. ' +
+        'The response says project_changed, and lists dropped_labels and dropped_assignee_ids: tell the user what was removed. ' +
         'The response field notified_user_ids lists who was actually notified (the user themselves is always left out): if someone you asked for is missing, or the response says nobody was notified, tell the user plainly who was not notified. ' +
         'If the move fails with anything that is not clearly a column or validation error (for example a 500, "Server Error", "fetch failed", a timeout), do NOT retry: the server may have processed it and the task may already be moved with the comment saved. Re-read the task\'s comments with protask_list_comments to see whether the move and comment went through, then ask the user what to do. ' +
         UNTRUSTED,
