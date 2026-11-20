@@ -45,6 +45,7 @@ const ATTESI = [
   'protask_list_custom_fields', 'protask_get_task_custom_fields', 'protask_set_task_custom_fields',
   'protask_list_checklists', 'protask_create_checklist', 'protask_add_checklist_item', 'protask_update_checklist_item',
   'protask_list_comments', 'protask_create_comment',
+  'protask_list_attachments', 'protask_upload_attachment', 'protask_attachment_upload_link',
   'protask_get_active_timer', 'protask_get_my_timers', 'protask_start_timer', 'protask_stop_timer', 'protask_add_manual_time',
 ];
 

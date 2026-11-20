@@ -5,7 +5,15 @@ import { ProTaskClient, ProTaskUnauthorizedError } from './api-client.js';
 import { createTokenVerifier, extractToken, requireToken, sendUnauthorized, sendVerifyFailure, type TokenVerifier } from './auth.js';
 import { PROTASK_API_URL, PROTASK_ISSUER, RESOURCE_URL } from './config.js';
 import { toolResult, SERVER_INSTRUCTIONS } from './handoff.js';
-import { TOOLS, executeTool, isKnownTool } from './tools.js';
+import { toolsFor, executeTool, isKnownTool, type ToolContext } from './tools.js';
+import {
+  MAX_ATTACHMENT_BYTES,
+  UploadLinkStore,
+  payloadFromUpload,
+  renderExpiredPage,
+  renderUploadPage,
+  uploadPageHeaders,
+} from './attachments.js';
 
 // Active SSE session (ogni app ha le sue, vedi createApp)
 interface SSESession {
@@ -32,7 +40,11 @@ const rpcError = (code: number, message: string, id: unknown): RpcOutcome =>
  * Le notifiche (notifications/*) non hanno risposta: 202. Tool sconosciuti, parametri mancanti
  * ed errori dell'API tornano come risultato del tool con isError. Lancia solo ProTaskUnauthorizedError.
  */
-export async function handleRpc(client: ProTaskClient, message: unknown): Promise<RpcOutcome> {
+export async function handleRpc(
+  client: ProTaskClient,
+  message: unknown,
+  ctx: ToolContext = { transport: 'http' }
+): Promise<RpcOutcome> {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return rpcError(-32600, 'Invalid Request', null);
   }
@@ -49,11 +61,11 @@ export async function handleRpc(client: ProTaskClient, message: unknown): Promis
       result = {};
       break;
     case 'tools/list':
-      result = { tools: TOOLS };
+      result = { tools: toolsFor(ctx.transport) };
       break;
     case 'tools/call': {
       if (typeof params?.name !== 'string') return rpcError(-32602, 'Invalid params: manca il nome del tool (params.name)', id);
-      result = toolResult(await executeTool(client, params.name, params.arguments ?? {}));
+      result = toolResult(await executeTool(client, params.name, params.arguments ?? {}, ctx));
       break;
     }
     default:
@@ -81,6 +93,68 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     exposedHeaders: ['WWW-Authenticate'],
   }));
+  const uploadLinks = new UploadLinkStore();
+  const ctx: ToolContext = { transport: 'http', uploadLinks };
+
+  // Pagina del link di caricamento (protask_attachment_upload_link). Il codice nel path è l'unica
+  // credenziale: chi lo ha può allegare file a quel task per 15 minuti. Prima di express.json(), così
+  // un file .json caricato arriva come byte e non viene interpretato
+  app.get('/upload/:code', (req: Request, res: Response) => {
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const link = uploadLinks.get(req.params.code);
+    res.status(link ? 200 : 404).set(uploadPageHeaders(nonce));
+    res.send(link ? renderUploadPage({ taskTitle: link.taskTitle, expiresAt: link.expiresAt, nonce }) : renderExpiredPage(nonce));
+  });
+
+  const rawBody = express.raw({ type: () => true, limit: MAX_ATTACHMENT_BYTES });
+  app.post('/upload/:code', (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const code = req.params.code;
+    if (!uploadLinks.get(code)) {
+      res.status(404).json({ error: 'link scaduto o non valido: chiedi a Claude un nuovo link' });
+      return;
+    }
+    rawBody(req, res, async (err?: unknown) => {
+      if (err) {
+        const status = (err as { status?: number }).status;
+        res.status(status === 413 ? 413 : 400).json({
+          error: status === 413 ? `file oltre ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB` : 'caricamento non leggibile',
+        });
+        return;
+      }
+      // Si rilegge: il link può essere scaduto o esaurito mentre arrivava il file
+      const link = uploadLinks.get(code);
+      if (!link) {
+        res.status(404).json({ error: 'link scaduto o non valido: chiedi a Claude un nuovo link' });
+        return;
+      }
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (body.length === 0) {
+        res.status(400).json({ error: 'file vuoto' });
+        return;
+      }
+      link.uploaded++;
+      try {
+        const file = payloadFromUpload(body, req.get('X-File-Name'), req.get('X-File-Type'));
+        const result = (await link.client.uploadAttachment(link.taskId, file)) as { error?: string };
+        if (result.error) {
+          link.uploaded--;
+          res.status(502).json({ error: `ProTask ha rifiutato il file: ${result.error}` });
+          return;
+        }
+        res.status(201).json({ ok: true, name: file.name, size: body.length });
+      } catch (error) {
+        if (error instanceof ProTaskUnauthorizedError) {
+          uploadLinks.revoke(code);
+          res.status(401).json({ error: 'la sessione ProTask è scaduta: chiedi a Claude un nuovo link' });
+          return;
+        }
+        link.uploaded--;
+        res.status(500).json({ error: 'errore durante il caricamento' });
+      }
+    });
+  });
+
   app.use(express.json());
 
   // L'API ha risposto 401 durante un tool: il token è morto, si toglie dalla memoria e si risponde 401
@@ -109,7 +183,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
 
   // List tools
   app.get('/mcp/tools', (req: Request, res: Response) => {
-    res.json({ tools: TOOLS });
+    res.json({ tools: toolsFor('http') });
   });
 
   // Call tool directly
@@ -122,7 +196,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     }
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
-      const result = await executeTool(client, toolName, req.body || {});
+      const result = await executeTool(client, toolName, req.body || {}, ctx);
       res.json({ success: !toolResult(result).isError, data: result });
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, false); return; }
@@ -135,7 +209,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     const token: string = res.locals.token;
     const client = new ProTaskClient(token, PROTASK_API_URL);
     try {
-      sendRpc(res, await handleRpc(client, req.body));
+      sendRpc(res, await handleRpc(client, req.body, ctx));
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, req.body?.id); return; }
       res.json({ jsonrpc: '2.0', error: { code: -32000, message: error instanceof Error ? error.message : 'Unknown error' }, id: req.body?.id ?? null });
@@ -216,7 +290,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     console.log(`[MSG] Session ${sessionId} - Method: ${method}, ID: ${id}`);
 
     try {
-      sendRpc(res, await handleRpc(session.client, req.body));
+      sendRpc(res, await handleRpc(session.client, req.body, ctx));
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) {
         chiudiSessione();
@@ -241,7 +315,7 @@ export function createApp(opts: { verifier?: TokenVerifier } = {}): Express {
     console.log(`[HTTP] Direct POST - Method: ${method}, ID: ${id}`);
 
     try {
-      sendRpc(res, await handleRpc(client, req.body));
+      sendRpc(res, await handleRpc(client, req.body, ctx));
     } catch (error) {
       if (error instanceof ProTaskUnauthorizedError) { tokenMorto(res, token, true, id); return; }
       console.error(`[ERR] Direct POST:`, error);

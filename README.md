@@ -106,6 +106,16 @@ Le definizioni sono globali (gli stessi campi su ogni task).
 - `protask_list_comments` - Lista commenti
 - `protask_create_comment` - Aggiungi commento (avvisa tutti i membri del workspace e non ha destinatari: per avvisare solo alcune persone usa `protask_move_task` con `message` e `notify_user_ids`)
 
+### Allegati
+Gli allegati vanno sul task e non sui commenti, perché l'API non accetta file sui commenti. Il limite è 20 MB a file, come il validator di ProTask.
+- `protask_list_attachments` - Lista allegati di un task
+- `protask_upload_attachment` - Allega un file. Si usa `url` (link http/https pubblico, che il server scarica) oppure, **solo sul server locale (stdio)**, `file_path` (path assoluto). Sul server remoto `file_path` non compare.
+  - Il download da `url` accetta solo indirizzi pubblici. Il controllo vale anche dopo la risoluzione DNS e sui redirect (massimo 3), con un timeout di 30 s.
+  - Con `file_path` vengono rifiutati i file e le cartelle nascosti (`.ssh`, `.env`, ...).
+- `protask_attachment_upload_link` - **Solo server remoto.** Crea un link `PUBLIC_URL/upload/<codice>`, valido 15 minuti e per al massimo 10 file. L'utente lo apre e trascina, sceglie o incolla (Ctrl+V) i file, che vengono caricati sul task con il suo token. È la via da usare per gli screenshot incollati in chat, perché il modello non può passarne i byte.
+  - I link vivono in memoria e si perdono a ogni riavvio del server.
+  - Il proxy davanti al server deve accettare body da 20 MB (in nginx: `client_max_body_size 21m;`).
+
 ### Timers
 - `protask_get_active_timer` - Timer attivo
 - `protask_get_my_timers` - I miei timer

@@ -48,6 +48,9 @@ export class ProTaskClient {
             'Content-Type': 'application/json',
             ...(options.headers || {}),
         };
+        // Multipart: il Content-Type con il boundary lo mette fetch
+        if (options.body instanceof FormData)
+            delete headers['Content-Type'];
         try {
             // Redirect seguiti a mano (massimo 3) per tenere l'header Authorization, solo sullo stesso host
             let current = new URL(url);
@@ -282,6 +285,15 @@ export class ProTaskClient {
                 body: typeof data.comment === 'string' ? escapeCommentHtml(data.comment) : data.comment,
             }),
         });
+    }
+    // Attachments (solo sul task: l'API non allega file ai commenti)
+    async listAttachments(taskId) {
+        return this.request(`/tasks/${taskId}/attachments`);
+    }
+    async uploadAttachment(taskId, file) {
+        const form = new FormData();
+        form.append('file', new Blob([file.data], { type: file.type }), file.name);
+        return this.request(`/tasks/${taskId}/attachments`, { method: 'POST', body: form });
     }
     // Timers
     async getActiveTimer() {
