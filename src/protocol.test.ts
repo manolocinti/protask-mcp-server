@@ -9,7 +9,7 @@ import type { TokenVerifier } from './auth.js';
 import { ProTaskClient } from './api-client.js';
 import { PROTASK_API_URL } from './config.js';
 import { createStdioServer } from './stdio-server.js';
-import { TOOLS } from './tools.js';
+import { toolsFor } from './tools.js';
 
 // Ogni token è valido: qui si prova il protocollo, la verifica sta in oauth.test.ts
 const verifierOk: TokenVerifier = { verify: async () => 'ok', forget: () => {} };
@@ -159,8 +159,8 @@ async function clientStdio() {
   return { client, chiudi: async () => { await client.close(); await server.close(); } };
 }
 
-test('elenco dei tool: HTTP (/mcp/tools, /mcp tools/list) e stdio danno lo stesso array TOOLS', async () => {
-  const atteso = JSON.parse(JSON.stringify(TOOLS));
+test('elenco dei tool: HTTP (/mcp/tools, /mcp tools/list) dà toolsFor(http), stdio dà toolsFor(stdio)', async () => {
+  const atteso = JSON.parse(JSON.stringify(toolsFor('http')));
 
   const diretto = await (await fetch(base + '/mcp/tools')).json() as { tools: unknown };
   assert.deepEqual(diretto.tools, atteso);
@@ -171,7 +171,7 @@ test('elenco dei tool: HTTP (/mcp/tools, /mcp tools/list) e stdio danno lo stess
   const s = await clientStdio();
   try {
     const { tools } = await s.client.listTools();
-    assert.deepEqual(JSON.parse(JSON.stringify(tools)), atteso);
+    assert.deepEqual(JSON.parse(JSON.stringify(tools)), JSON.parse(JSON.stringify(toolsFor('stdio'))));
   } finally { await s.chiudi(); }
 });
 

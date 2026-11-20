@@ -103,6 +103,12 @@ export declare class ProTaskClient {
     createComment(taskId: number, data: {
         comment: string;
     }): Promise<ApiResponse<unknown>>;
+    listAttachments(taskId: number): Promise<ApiResponse<unknown>>;
+    uploadAttachment(taskId: number, file: {
+        data: Uint8Array;
+        name: string;
+        type: string;
+    }): Promise<ApiResponse<unknown>>;
     getActiveTimer(): Promise<ApiResponse<unknown>>;
     getMyTimers(): Promise<ApiResponse<unknown>>;
     startTimer(taskId: number, description?: string): Promise<ApiResponse<unknown>>;

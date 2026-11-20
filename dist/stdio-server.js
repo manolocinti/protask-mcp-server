@@ -2,14 +2,14 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { toolResult, SERVER_INSTRUCTIONS } from './handoff.js';
-import { TOOLS, executeTool } from './tools.js';
+import { toolsFor, executeTool } from './tools.js';
 export function createStdioServer(client) {
     const server = new Server({ name: 'protask-mcp-server', version: '1.0.0' }, { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS });
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolsFor('stdio') }));
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { name, arguments: args } = request.params;
         try {
-            return toolResult(await executeTool(client, name, args ?? {}));
+            return toolResult(await executeTool(client, name, args ?? {}, { transport: 'stdio' }));
         }
         catch (error) {
             // Su stdio non c'è un 401 da mandare: il token scaduto diventa un errore del tool

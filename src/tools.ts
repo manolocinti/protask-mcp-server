@@ -12,6 +12,16 @@ import {
   PRIORITY_WORD_LIST,
   DUE_VALUES,
 } from './filters.js';
+import {
+  downloadFile,
+  loadLocalFile,
+  mimeFromName,
+  safeFileName,
+  MAX_ATTACHMENT_BYTES,
+  UPLOAD_LINK_MAX_FILES,
+  type UploadLinkStore,
+} from './attachments.js';
+import { PUBLIC_URL } from './config.js';
 
 type Args = Record<string, unknown>;
 
@@ -401,6 +411,32 @@ export const TOOLS: Tool[] = [
     },
   },
 
+  // Attachments
+  {
+    name: 'protask_list_attachments',
+    description: DESCRIPTIONS.protask_list_attachments,
+    inputSchema: { type: 'object', properties: { task_id: id('Task ID') }, required: ['task_id'] },
+  },
+  {
+    name: 'protask_upload_attachment',
+    description: DESCRIPTIONS.protask_upload_attachment,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: id('Task ID'),
+        file_path: { type: 'string', description: 'Absolute path of a file on this computer (local server only)' },
+        url: { type: 'string', description: 'Public http(s) URL of the file: the server downloads it and attaches it' },
+        file_name: { type: 'string', description: 'Name for the attachment (optional; default: taken from the path or URL)' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'protask_attachment_upload_link',
+    description: DESCRIPTIONS.protask_attachment_upload_link,
+    inputSchema: { type: 'object', properties: { task_id: id('Task ID') }, required: ['task_id'] },
+  },
+
   // Timers
   { name: 'protask_get_active_timer', description: DESCRIPTIONS.protask_get_active_timer, inputSchema: noArgs },
   { name: 'protask_get_my_timers', description: DESCRIPTIONS.protask_get_my_timers, inputSchema: noArgs },
@@ -437,6 +473,31 @@ export const TOOLS: Tool[] = [
 const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
 /**
+ * Dove gira il server. stdio: sul computer dell'utente, quindi file_path ha senso e non c'è un web
+ * per il link di caricamento. http: sul VPS, quindi file_path leggerebbe il disco del server.
+ */
+export interface ToolContext {
+  transport: 'stdio' | 'http';
+  uploadLinks?: UploadLinkStore;
+}
+
+const LINK_TOOL = 'protask_attachment_upload_link';
+const UPLOAD_TOOL = 'protask_upload_attachment';
+
+function withoutProperty(tool: Tool, prop: string): Tool {
+  const { [prop]: _omit, ...properties } = tool.inputSchema.properties ?? {};
+  return { ...tool, inputSchema: { ...tool.inputSchema, properties } };
+}
+
+const TOOLS_BY_TRANSPORT: Record<ToolContext['transport'], Tool[]> = {
+  stdio: TOOLS.filter((t) => t.name !== LINK_TOOL),
+  http: TOOLS.map((t) => (t.name === UPLOAD_TOOL ? withoutProperty(t, 'file_path') : t)),
+};
+
+/** I tool che vede il client su quel trasporto (sottoinsieme di TOOLS). */
+export const toolsFor = (transport: ToolContext['transport']): Tool[] => TOOLS_BY_TRANSPORT[transport];
+
+/**
  * Corpo di una richiesta costruito solo dalle chiavi dello schema del tool (meno quelle del percorso):
  * argomenti inventati dal modello non arrivano all'API. Le chiavi assenti o undefined non si mandano.
  */
@@ -458,7 +519,51 @@ function taskBody(toolName: string, args: Args, exclude: string[] = []): Args {
   return body;
 }
 
-type Handler = (client: ProTaskClient, args: Args) => Promise<unknown>;
+type Handler = (client: ProTaskClient, args: Args, ctx: ToolContext) => Promise<unknown>;
+
+async function uploadAttachment(c: ProTaskClient, a: Args, ctx: ToolContext): Promise<unknown> {
+  const hasPath = !isMissing(a.file_path);
+  const hasUrl = !isMissing(a.url);
+  if (hasPath && ctx.transport !== 'stdio') {
+    throw new ToolInputError(
+      'file_path funziona solo con il server locale: questo server è remoto e non vede i file del computer dell\'utente. ' +
+      'Usa url per un file pubblicato online, oppure protask_attachment_upload_link per dare all\'utente un link dove trascinare il file'
+    );
+  }
+  if (hasPath === hasUrl) {
+    throw new ToolInputError(ctx.transport === 'stdio'
+      ? 'indica uno solo fra file_path (file su questo computer) e url (file online)'
+      : 'manca url. Per un file che l\'utente ha sul suo computer o ha incollato in chat usa protask_attachment_upload_link');
+  }
+  const file = hasPath ? await loadLocalFile(String(a.file_path)) : await downloadFile(String(a.url));
+  if (!isMissing(a.file_name)) {
+    file.name = safeFileName(String(a.file_name));
+    file.type = file.type === 'application/octet-stream' ? mimeFromName(file.name) : file.type;
+  }
+  return c.uploadAttachment(a.task_id as number, file);
+}
+
+async function createUploadLink(c: ProTaskClient, a: Args, ctx: ToolContext): Promise<unknown> {
+  if (!ctx.uploadLinks) {
+    throw new ToolInputError('il link di caricamento c\'è solo sul server remoto: in locale usa protask_upload_attachment con file_path');
+  }
+  const taskId = a.task_id as number;
+  const task = (await c.getTask(taskId)) as { data?: { title?: string }; error?: string };
+  if (task.error) return task;
+  const title = task.data?.title ?? `Task ${taskId}`;
+  const { code, expiresAt } = ctx.uploadLinks.create(c, taskId, title);
+  return {
+    upload_url: `${PUBLIC_URL}/upload/${code}`,
+    task_id: taskId,
+    task_title: title,
+    expires_at: new Date(expiresAt).toISOString(),
+    max_files: UPLOAD_LINK_MAX_FILES,
+    max_size_mb: MAX_ATTACHMENT_BYTES / 1024 / 1024,
+    next_step:
+      'Give upload_url to the user: they open it, drag, choose or paste (Ctrl+V) the files, and they are attached to the task. ' +
+      'You cannot open the link yourself. Afterwards, check with protask_list_attachments if needed.',
+  };
+}
 
 const HANDLERS: Record<string, Handler> = {
   // Auth
@@ -519,6 +624,10 @@ const HANDLERS: Record<string, Handler> = {
   // Comments
   protask_list_comments: (c, a) => c.listComments(a.task_id as number),
   protask_create_comment: (c, a) => c.createComment(a.task_id as number, a as { comment: string }),
+  // Attachments
+  protask_list_attachments: (c, a) => c.listAttachments(a.task_id as number),
+  protask_upload_attachment: uploadAttachment,
+  protask_attachment_upload_link: createUploadLink,
   // Timers
   protask_get_active_timer: (c) => c.getActiveTimer(),
   protask_get_my_timers: (c) => c.getMyTimers(),
@@ -537,11 +646,19 @@ const isMissing = (v: unknown) => v === undefined || v === null || (typeof v ===
  * argomenti non validi tornano come `{ error }` (toolResult li segna isError). Lancia solo
  * ProTaskUnauthorizedError, così il trasporto HTTP risponde 401 e il client rinnova il token.
  */
-export async function executeTool(client: ProTaskClient, name: string, rawArgs: unknown): Promise<unknown> {
+export async function executeTool(
+  client: ProTaskClient,
+  name: string,
+  rawArgs: unknown,
+  ctx: ToolContext = { transport: 'http' }
+): Promise<unknown> {
   const tool = TOOL_BY_NAME.get(name);
   const handler = HANDLERS[name];
   if (!tool || !handler) {
     return { error: `Tool sconosciuto: ${name}. Chiedi l'elenco dei tool (tools/list) e usa uno di quei nomi` };
+  }
+  if (!toolsFor(ctx.transport).some((t) => t.name === name)) {
+    return { error: `${name} non è disponibile su questo server (${ctx.transport === 'stdio' ? 'locale' : 'remoto'})` };
   }
   const args: Args =
     typeof rawArgs === 'object' && rawArgs !== null && !Array.isArray(rawArgs) ? (rawArgs as Args) : {};
@@ -550,7 +667,7 @@ export async function executeTool(client: ProTaskClient, name: string, rawArgs: 
   if (missing.length) return { error: `parametri obbligatori mancanti: ${missing.join(', ')}` };
 
   try {
-    return await handler(client, args);
+    return await handler(client, args, ctx);
   } catch (error) {
     if (error instanceof ProTaskUnauthorizedError) throw error;
     return { error: error instanceof Error ? error.message : 'Unknown error' };
